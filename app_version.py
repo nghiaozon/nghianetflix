@@ -1,6 +1,6 @@
 """Application release information."""
 
-APP_VERSION = "1.0.2"
+APP_VERSION = "1.0.3"
 
 # The release script also uploads update.json as a release asset. New builds use
 # this stable URL, while the repository copy remains available to older builds.

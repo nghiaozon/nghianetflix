@@ -1,12 +1,11 @@
 {
-  "version": "1.0.2",
-  "download_url": "https://github.com/nghiaozon/nghianetflix/releases/download/v1.0.2/NetflixManager.exe",
-  "changelog": "Bản phát hành đầu tiên có chức năng tự cập nhật.",
-  "package_type": "exe",
-  "package_name": "NetflixManager.exe",
-  "file_name": "NetflixManager.exe",
-  "executable_name": "NetflixManager.exe",
-  "sha256": "",
-  "require_authenticode": false,
-  "publisher": ""
+    "version":  "1.0.3",
+    "download_url":  "https://github.com/nghiaozon/nghianetflix/releases/download/v1.0.3/NetflixManager.exe",
+    "changelog":  "Cáº­p nháº­t vÃ  cáº£i thiá»‡n á»©ng dá»¥ng.",
+    "package_type":  "exe",
+    "package_name":  "NetflixManager.exe",
+    "executable_name":  "NetflixManager.exe",
+    "sha256":  "9d738be2d2a608ad7257bf5b78cd5bc52eef9f20a97eabbb42da872be2eb82f2",
+    "require_authenticode":  false,
+    "publisher":  ""
 }
