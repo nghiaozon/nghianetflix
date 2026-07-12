@@ -47,6 +47,7 @@ jobs:
             changelog = "Xem ghi chú phát hành trên GitHub."
             package_type = "exe"
             package_name = "NetflixManager.exe"
+            file_name = "NetflixManager.exe"
             executable_name = "NetflixManager.exe"
             sha256 = $hash
             require_authenticode = $false
