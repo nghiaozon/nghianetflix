@@ -5,8 +5,13 @@ from __future__ import annotations
 import argparse
 import hashlib
 import sys
+from pathlib import Path
 
 import requests
+
+# Running this file directly makes Python use tools/ as sys.path[0]. Add the
+# repository root so the verifier can import the same updater module as the app.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import updater
 
