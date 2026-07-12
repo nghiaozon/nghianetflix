@@ -3,12 +3,41 @@
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QTextEdit,
     QDateEdit, QPushButton, QComboBox, QTableWidget, QTableWidgetItem,
-    QHeaderView, QMessageBox, QFormLayout, QWidget, QAbstractItemView, QMenu
+    QHeaderView, QMessageBox, QFormLayout, QWidget, QAbstractItemView, QMenu,
+    QCompleter
 )
-from PySide6.QtCore import QDate, Qt
+from PySide6.QtCore import QDate, Qt, QStringListModel
 from PySide6.QtGui import QBrush, QColor, QPalette, QKeySequence
 from PySide6.QtWidgets import QApplication
 import database
+
+
+class AutocompleteLineEdit(QLineEdit):
+    """QLineEdit with explicit, Windows-like popup completion."""
+
+    def set_suggestions(self, suggestions):
+        model = QStringListModel(suggestions, self)
+        completer = QCompleter(model, self)
+        completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        completer.setFilterMode(Qt.MatchFlag.MatchStartsWith)
+        completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
+        completer.setMaxVisibleItems(10)
+        self.setCompleter(completer)
+
+    def keyPressEvent(self, event):
+        completer = self.completer()
+        if (completer is not None
+                and event.key() in (Qt.Key.Key_Tab, Qt.Key.Key_Backtab)
+                and completer.popup().isVisible()):
+            index = completer.popup().currentIndex()
+            if not index.isValid() and completer.completionModel().rowCount() > 0:
+                index = completer.completionModel().index(0, 0)
+            if index.isValid():
+                self.setText(str(index.data()))
+                completer.popup().hide()
+                event.accept()
+                return
+        super().keyPressEvent(event)
 
 
 class CopyableTableWidget(QTableWidget):
@@ -241,8 +270,9 @@ class AccountDialog(QDialog):
         form_layout.addRow("Ngày hết hạn (*):", self.expiry_date)
         
         # Nguồn
-        self.source_input = QLineEdit()
+        self.source_input = AutocompleteLineEdit()
         self.source_input.setPlaceholderText("Nhập nguồn tài khoản...")
+        self.source_input.set_suggestions(database.get_account_source_suggestions())
         form_layout.addRow("Nguồn:", self.source_input)
         
         # Trạng thái (Chỉ hiển thị khi Sửa)
@@ -394,13 +424,15 @@ class OrderDialog(QDialog):
         form_layout.addRow("Nền tảng (*):", self.platform_combo)
         
         # Tên khách hàng
-        self.customer_input = QLineEdit()
+        self.customer_input = AutocompleteLineEdit()
         self.customer_input.setPlaceholderText("Nguyễn Văn A")
+        self.customer_input.set_suggestions(database.get_order_customer_suggestions())
         form_layout.addRow("Tên khách hàng:", self.customer_input)
         
         # Số tiền
-        self.amount_input = QLineEdit()
+        self.amount_input = AutocompleteLineEdit()
         self.amount_input.setPlaceholderText("Ví dụ: 100000")
+        self.amount_input.set_suggestions(database.get_order_amount_suggestions())
         form_layout.addRow("Số tiền (VND) (*):", self.amount_input)
         
         # Số lần thông báo (Chỉ hiển thị khi Sửa)

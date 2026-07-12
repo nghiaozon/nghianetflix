@@ -309,6 +309,59 @@ def get_all_emails():
     return [row['email'] for row in rows]
 
 
+def _unique_non_empty_values(query, value_key, formatter=str):
+    """Return persisted autocomplete values, de-duplicated for display."""
+    conn = get_connection()
+    try:
+        rows = conn.execute(query).fetchall()
+    finally:
+        conn.close()
+
+    values = []
+    seen = set()
+    for row in rows:
+        raw_value = row[value_key]
+        if raw_value is None:
+            continue
+        value = formatter(raw_value).strip()
+        key = value.casefold()
+        if value and key not in seen:
+            seen.add(key)
+            values.append(value)
+    return sorted(values, key=str.casefold)
+
+
+def get_account_source_suggestions():
+    """Get sources from all non-deleted accounts for source autocomplete."""
+    return _unique_non_empty_values(
+        "SELECT nguon FROM tai_khoan "
+        "WHERE trang_thai != 'Đã xóa' AND nguon IS NOT NULL",
+        "nguon",
+    )
+
+
+def get_order_customer_suggestions():
+    """Get customer names from all non-deleted orders for autocomplete."""
+    return _unique_non_empty_values(
+        "SELECT ten_khach_hang FROM don_hang "
+        "WHERE da_xoa = 0 AND ten_khach_hang IS NOT NULL",
+        "ten_khach_hang",
+    )
+
+
+def get_order_amount_suggestions():
+    """Get amounts from all non-deleted orders using their input-friendly form."""
+    def format_amount(value):
+        number = float(value)
+        return str(int(number)) if number.is_integer() else format(number, "g")
+
+    return _unique_non_empty_values(
+        "SELECT so_tien FROM don_hang WHERE da_xoa = 0 AND so_tien IS NOT NULL",
+        "so_tien",
+        format_amount,
+    )
+
+
 def get_active_order_count_for_email(email):
     """Trả về số lượng đơn hàng còn hiệu lực (không bị xóa) đang sử dụng email tài khoản này."""
     conn = get_connection()

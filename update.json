@@ -1,11 +1,11 @@
 {
-    "version":  "1.0.3",
-    "download_url":  "https://github.com/nghiaozon/nghianetflix/releases/download/v1.0.3/NetflixManager.exe",
+    "version":  "1.0.4",
+    "download_url":  "https://github.com/nghiaozon/nghianetflix/releases/download/v1.0.4/NetflixManager.exe",
     "changelog":  "Cáº­p nháº­t vÃ  cáº£i thiá»‡n á»©ng dá»¥ng.",
     "package_type":  "exe",
     "package_name":  "NetflixManager.exe",
     "executable_name":  "NetflixManager.exe",
-    "sha256":  "9d738be2d2a608ad7257bf5b78cd5bc52eef9f20a97eabbb42da872be2eb82f2",
+    "sha256":  "e833a49d3c28cb8cf2c149b12116811f9fe934e709b1d05b97f1a1eac3796410",
     "require_authenticode":  false,
     "publisher":  ""
 }
