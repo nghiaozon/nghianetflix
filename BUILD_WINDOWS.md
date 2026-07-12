@@ -65,13 +65,8 @@ Lưu ý: phải build trên Windows để tạo `.exe` Windows; nên build cùng
 
 ## Phát hành bản tự cập nhật bằng một lệnh
 
-Thiết lập một lần GitHub token có quyền **Contents: Read and write**:
-
-```powershell
-$env:GITHUB_TOKEN = "github_pat_..."
-```
-
-Không ghi token vào file trong dự án. Có thể lưu biến môi trường trong Windows nếu không muốn nhập lại sau khi mở terminal mới.
+Không cần `GITHUB_TOKEN` cục bộ. Quy trình dùng thông tin đăng nhập Git hiện có để push tag;
+GitHub Actions tạo Release bằng token nội bộ của repository.
 
 Sau mỗi lần sửa code, chạy duy nhất:
 
@@ -80,9 +75,9 @@ Sau mỗi lần sửa code, chạy duy nhất:
 ```
 
 Lệnh trên tự tăng phiên bản `patch`, build và smoke-test EXE, tính SHA-256, cập nhật
-`app_version.py`/`update.json`, chạy test, commit và push thay đổi, tạo GitHub Release dạng draft,
-upload EXE cùng manifest rồi mới công bố Release. Nếu bước nào lỗi, quy trình dừng với exit code 1 và
-Release chưa hoàn chỉnh vẫn ở trạng thái draft.
+`app_version.py`/`update.json`, chạy test, commit, push code và push tag. GitHub Actions nhận tag,
+build lại gói chính thức rồi tự tạo GitHub Release cùng EXE và manifest. Nếu lỗi xảy ra trước khi
+commit, script tự khôi phục version và manifest ban đầu.
 
 Các tùy chọn thường dùng:
 

@@ -50,35 +50,12 @@ function Invoke-Git([string[]]$Arguments) {
     if ($LASTEXITCODE -ne 0) { Fail "Git loi khi chay: git $($Arguments -join ' ')" }
 }
 
-function Invoke-GitHubApi(
-    [string]$Method,
-    [string]$Uri,
-    [object]$Body = $null,
-    [string]$InFile = "",
-    [string]$ContentType = "application/json"
-) {
-    $headers = @{
-        Authorization = "Bearer $env:GITHUB_TOKEN"
-        Accept = "application/vnd.github+json"
-        "X-GitHub-Api-Version" = "2022-11-28"
-        "User-Agent" = "NetflixManager-release-script"
-    }
-    $parameters = @{ Method = $Method; Uri = $Uri; Headers = $headers }
-    if ($InFile) {
-        $parameters.InFile = $InFile
-        $parameters.ContentType = $ContentType
-    } elseif ($null -ne $Body) {
-        $parameters.Body = ($Body | ConvertTo-Json -Depth 10)
-        $parameters.ContentType = "application/json; charset=utf-8"
-    }
-    return Invoke-RestMethod @parameters
-}
+$originalVersionContent = Get-Content -LiteralPath $VersionFile -Raw -Encoding UTF8
+$originalManifestContent = Get-Content -LiteralPath $ManifestFile -Raw -Encoding UTF8
+$sourceCommitted = $false
 
 try {
     if (-not (Test-Path -LiteralPath $Git)) { Fail "Khong tim thay Git tai $Git" }
-    if (-not $NoPush -and [string]::IsNullOrWhiteSpace($env:GITHUB_TOKEN)) {
-        Fail "Chua co GITHUB_TOKEN. Hay tao token co quyen Contents: Read and write, roi dat bien moi truong GITHUB_TOKEN."
-    }
 
     $currentVersion = Get-CurrentVersion
     if ([string]::IsNullOrWhiteSpace($Version)) {
@@ -117,6 +94,7 @@ try {
         changelog = $Notes
         package_type = $Package
         package_name = $assetName
+        file_name = $assetName
         executable_name = $ExecutableName
         sha256 = $hash
         require_authenticode = $false
@@ -145,63 +123,27 @@ try {
     Invoke-Git @("add", "-A")
     & $Git diff --cached --quiet
     if ($LASTEXITCODE -ne 0) { Invoke-Git @("commit", "-m", "Release v$Version") }
+    $sourceCommitted = $true
     $branch = (& $Git branch --show-current).Trim()
     if (-not $branch) { Fail "Khong xac dinh duoc nhanh Git hien tai." }
     Invoke-Git @("push", "origin", $branch)
-    $targetCommit = (& $Git rev-parse HEAD).Trim()
 
-    Write-Step "Tao GitHub Release dang draft"
-    $api = "https://api.github.com/repos/$Repository"
-    try {
-        $release = Invoke-GitHubApi "GET" "$api/releases/tags/v$Version"
-        $release = Invoke-GitHubApi "PATCH" "$api/releases/$($release.id)" @{
-            name = "Netflix Manager v$Version"; body = $Notes; draft = $true; prerelease = $false
-        }
-    } catch {
-        if ($_.Exception.Response -and [int]$_.Exception.Response.StatusCode -eq 404) {
-            $release = Invoke-GitHubApi "POST" "$api/releases" @{
-                tag_name = "v$Version"; target_commitish = $targetCommit
-                name = "Netflix Manager v$Version"; body = $Notes; draft = $true; prerelease = $false
-            }
-        } else { throw }
-    }
+    Write-Step "Tao va push tag v$Version"
+    & $Git rev-parse --verify --quiet "refs/tags/v$Version" | Out-Null
+    if ($LASTEXITCODE -eq 0) { Fail "Tag v$Version da ton tai." }
+    Invoke-Git @("tag", "-a", "v$Version", "-m", "Netflix Manager v$Version")
+    Invoke-Git @("push", "origin", "v$Version")
 
-    Write-Step "Upload $assetName va update.json"
-    $packageAssetId = $null
-    foreach ($upload in @($assetPath, $ManifestFile)) {
-        $name = Split-Path -Leaf $upload
-        foreach ($oldAsset in @($release.assets | Where-Object { $_.name -eq $name })) {
-            Invoke-GitHubApi "DELETE" "$api/releases/assets/$($oldAsset.id)" | Out-Null
-        }
-        $encodedName = [Uri]::EscapeDataString($name)
-        $uploadedAsset = Invoke-GitHubApi "POST" "https://uploads.github.com/repos/$Repository/releases/$($release.id)/assets?name=$encodedName" $null $upload "application/octet-stream"
-        if ($name -eq $assetName) { $packageAssetId = $uploadedAsset.id }
-    }
-
-    Write-Step "Tai lai asset va xac minh SHA-256"
-    if (-not $packageAssetId) { Fail "GitHub khong tra ve ID cua package da upload." }
-    $verifyPath = Join-Path ([IO.Path]::GetTempPath()) "NetflixManager-release-$Version-$assetName"
-    try {
-        $downloadHeaders = @{
-            Authorization = "Bearer $env:GITHUB_TOKEN"
-            Accept = "application/octet-stream"
-            "X-GitHub-Api-Version" = "2022-11-28"
-            "User-Agent" = "NetflixManager-release-script"
-        }
-        Invoke-WebRequest -Uri "$api/releases/assets/$packageAssetId" -Headers $downloadHeaders -OutFile $verifyPath -UseBasicParsing
-        $uploadedHash = (Get-FileHash -LiteralPath $verifyPath -Algorithm SHA256).Hash.ToLowerInvariant()
-        if ($uploadedHash -ne $hash) { Fail "Asset tren GitHub khong khop SHA-256 cua ban build." }
-    } finally {
-        Remove-Item -LiteralPath $verifyPath -Force -ErrorAction SilentlyContinue
-    }
-
-    Write-Step "Cong bo Release"
-    $published = Invoke-GitHubApi "PATCH" "$api/releases/$($release.id)" @{ draft = $false }
-    Write-Host "`nPHAT HANH THANH CONG v$Version" -ForegroundColor Green
-    Write-Host $published.html_url
-    Write-Host "SHA-256: $hash"
+    Write-Host "`nDA GUI YEU CAU PHAT HANH v$Version LEN GITHUB" -ForegroundColor Green
+    Write-Host "GitHub Actions se build, xac minh va tao Release tu dong."
+    Write-Host "Theo doi: https://github.com/$Repository/actions"
 } catch {
+    if (-not $sourceCommitted) {
+        [IO.File]::WriteAllText($VersionFile, $originalVersionContent, [Text.UTF8Encoding]::new($false))
+        [IO.File]::WriteAllText($ManifestFile, $originalManifestContent, [Text.UTF8Encoding]::new($false))
+        Write-Host "Da khoi phuc version va manifest ban dau." -ForegroundColor Yellow
+    }
     Write-Host "`n$($_.Exception.Message)" -ForegroundColor Red
-    Write-Host "Da dung quy trinh; GitHub Release draft (neu da tao) khong duoc cong bo." -ForegroundColor Yellow
+    Write-Host "Da dung quy trinh. Xem loi o tren va chay lai sau khi sua." -ForegroundColor Yellow
     exit 1
 }

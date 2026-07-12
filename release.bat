@@ -9,5 +9,5 @@ if errorlevel 1 (
   exit /b 1
 )
 echo.
-echo Phat hanh hoan tat.
+echo Da gui yeu cau phat hanh. Theo doi ket qua tren GitHub Actions.
 pause
