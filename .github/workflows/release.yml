@@ -35,11 +35,29 @@ jobs:
       - name: Build EXE
         run: pyinstaller --noconfirm --clean NetflixManager.spec
 
-      - name: Create SHA-256 file
+      - name: Create update manifest and SHA-256 file
         shell: pwsh
         run: |
           $hash = (Get-FileHash dist/NetflixManager.exe -Algorithm SHA256).Hash.ToLower()
           "$hash  NetflixManager.exe" | Set-Content dist/NetflixManager.exe.sha256
+          $version = python -c "from app_version import APP_VERSION; print(APP_VERSION)"
+          $manifest = [ordered]@{
+            version = $version
+            download_url = "https://github.com/${{ github.repository }}/releases/download/v$version/NetflixManager.exe"
+            changelog = "Xem ghi chú phát hành trên GitHub."
+            package_type = "exe"
+            package_name = "NetflixManager.exe"
+            executable_name = "NetflixManager.exe"
+            sha256 = $hash
+            require_authenticode = $false
+            publisher = ""
+          }
+          $manifest | ConvertTo-Json | Set-Content dist/update.json -Encoding utf8
+
+      - name: Validate update manifest
+        shell: pwsh
+        run: |
+          python -c "import json, updater; updater.validate_manifest(json.load(open('dist/update.json', encoding='utf-8-sig')), require_hash=True)"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -47,4 +65,13 @@ jobs:
           files: |
             dist/NetflixManager.exe
             dist/NetflixManager.exe.sha256
+            dist/update.json
           generate_release_notes: true
+
+      # Version 1.0.0 used a version-pinned manifest URL. Keep that URL alive so
+      # already-installed copies can discover and move to the newest release.
+      - name: Update legacy v1.0.0 manifest
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload v1.0.0 dist/update.json --clobber --repo "${{ github.repository }}"

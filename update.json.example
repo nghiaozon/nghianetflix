@@ -2,6 +2,10 @@
   "version": "1.1.0",
   "download_url": "https://github.com/nghiaozon/nghianetflix/releases/download/v1.1.0/NetflixManager.exe",
   "changelog": "- Thêm tính năng mới\n- Sửa lỗi và cải thiện hiệu năng",
-  "file_name": "NetflixManager.exe",
-  "sha256": ""
+  "package_type": "exe",
+  "package_name": "NetflixManager.exe",
+  "executable_name": "NetflixManager.exe",
+  "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "require_authenticode": false,
+  "publisher": ""
 }

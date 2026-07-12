@@ -1,0 +1,20 @@
+name: Verify update release
+
+on:
+  workflow_dispatch:
+    inputs:
+      manifest_url:
+        description: Public HTTPS URL of update.json
+        required: true
+        default: https://raw.githubusercontent.com/nghiaozon/nghianetflix/main/update.json
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install requests
+      - run: python tools/verify_release.py "${{ inputs.manifest_url }}"

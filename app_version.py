@@ -1,9 +1,10 @@
 """Application release information."""
 
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.0.1"
 
-# Replace this with the raw/public URL of update.json before publishing.
+# The release script also uploads update.json as a release asset. New builds use
+# this stable URL, while the repository copy remains available to older builds.
 # It can also be overridden with NETFLIX_MANAGER_UPDATE_URL.
 DEFAULT_UPDATE_MANIFEST_URL = (
-    "https://raw.githubusercontent.com/nghiaozon/nghianetflix/main/update.json"
+    "https://github.com/nghiaozon/nghianetflix/releases/latest/download/update.json"
 )

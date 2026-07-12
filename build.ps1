@@ -11,6 +11,12 @@ if (-not (Test-Path $python)) {
 & $python -m pip install -r requirements.txt
 & $python -m PyInstaller --noconfirm --clean NetflixManager.spec
 
+# Smoke test chạy chính file PyInstaller; exit code khác 0 sẽ dừng bản build.
+& "$PSScriptRoot\dist\NetflixManager.exe" --self-test-update
+if ($LASTEXITCODE -ne 0) {
+    throw "PyInstaller updater smoke test that bai (exit code $LASTEXITCODE)."
+}
+
 $dataDir = Join-Path $PSScriptRoot "dist\data"
 $configDir = Join-Path $PSScriptRoot "dist\config"
 New-Item -ItemType Directory -Force -Path $dataDir | Out-Null

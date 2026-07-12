@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (
     QAbstractItemView, QButtonGroup, QDialog, QSizePolicy, QFileDialog,
     QGraphicsDropShadowEffect
 )
-from PySide6.QtCore import Qt, QSize, QDate, QObject, QThread, Signal
+from PySide6.QtCore import Qt, QSize, QDate, QObject, QThread, QTimer, Signal
 from PySide6.QtGui import QFont, QIcon, QPixmap, QColor
 
 # Import các file module cục bộ
@@ -191,6 +191,10 @@ class MainWindow(QMainWindow):
         # Cập nhật trạng thái sync Google Sheets
         self.update_sync_status()
 
+        # Kiểm tra nền sau khi UI đã sẵn sàng. Lỗi mạng ở lần kiểm tra tự động
+        # được bỏ qua để không làm gián đoạn lúc người dùng mở ứng dụng.
+        QTimer.singleShot(1500, self.check_update_on_startup)
+
     def init_ui(self):
         # Widget trung tâm chính
         central_widget = QWidget()
@@ -300,7 +304,7 @@ class MainWindow(QMainWindow):
         # Kết nối sự kiện chuyển Tab khi bấm nút Sidebar
         self.nav_group.buttonClicked.connect(self.on_nav_clicked)
 
-    def _run_update_worker(self, action, payload, on_success):
+    def _run_update_worker(self, action, payload, on_success, on_error=None):
         self.btn_update.setEnabled(False)
         self._update_thread = QThread(self)
         self._update_worker = UpdateWorker(action, payload)
@@ -308,7 +312,7 @@ class MainWindow(QMainWindow):
         self._update_thread.started.connect(self._update_worker.run)
         self._update_worker.finished.connect(on_success)
         self._update_worker.finished.connect(self._update_thread.quit)
-        self._update_worker.failed.connect(self._on_update_error)
+        self._update_worker.failed.connect(on_error or self._on_update_error)
         self._update_worker.failed.connect(self._update_thread.quit)
         self._update_worker.progress.connect(
             lambda value: self.btn_update.setText(f"Đang tải... {value}%")
@@ -325,6 +329,17 @@ class MainWindow(QMainWindow):
     def on_update_clicked(self):
         self.btn_update.setText("Đang kiểm tra...")
         self._run_update_worker("check", None, self._on_update_checked)
+
+    def check_update_on_startup(self):
+        if hasattr(self, "_update_thread") and self._update_thread.isRunning():
+            return
+        self._run_update_worker(
+            "check", None, self._on_startup_update_checked, lambda _message: None
+        )
+
+    def _on_startup_update_checked(self, info):
+        if info.get("update_available"):
+            self._on_update_checked(info)
 
     def _on_update_checked(self, info):
         if not info["update_available"]:
@@ -1431,6 +1446,9 @@ class MainWindow(QMainWindow):
 
 
 if __name__ == '__main__':
+    if "--self-test-update" in sys.argv:
+        raise SystemExit(0 if updater.frozen_runtime_self_test() else 1)
+
     # Hỗ trợ High DPI hiển thị mịn màng trên Windows màn hình phân giải cao
     os.environ["QT_AUTO_SCREEN_SCALE_FACTOR"] = "1"
     
