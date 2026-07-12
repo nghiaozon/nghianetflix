@@ -1,0 +1,7 @@
+PySide6
+matplotlib
+python-dotenv
+gspread
+google-auth
+requests
+PyInstaller

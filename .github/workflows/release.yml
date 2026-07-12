@@ -1,0 +1,50 @@
+name: Build and release Windows app
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Verify tag matches app version
+        shell: pwsh
+        run: |
+          $version = python -c "from app_version import APP_VERSION; print(APP_VERSION)"
+          if ("v$version" -ne "${{ github.ref_name }}") {
+            throw "Tag ${{ github.ref_name }} does not match APP_VERSION=$version"
+          }
+
+      - name: Build EXE
+        run: pyinstaller --noconfirm --clean NetflixManager.spec
+
+      - name: Create SHA-256 file
+        shell: pwsh
+        run: |
+          $hash = (Get-FileHash dist/NetflixManager.exe -Algorithm SHA256).Hash.ToLower()
+          "$hash  NetflixManager.exe" | Set-Content dist/NetflixManager.exe.sha256
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/NetflixManager.exe
+            dist/NetflixManager.exe.sha256
+          generate_release_notes: true

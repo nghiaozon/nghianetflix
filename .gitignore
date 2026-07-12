@@ -1,0 +1,12 @@
+.venv/
+build/
+dist/
+dist_verify/
+__pycache__/
+*.pyc
+.env
+credentials.json
+config/
+data/
+*.db
+fontlist-*.json
