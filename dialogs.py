@@ -571,12 +571,17 @@ class OrderDialog(QDialog):
 
 class TrashBinDialog(QDialog):
     """Hộp thoại Thùng rác chứa Tài khoản và Đơn hàng đã xóa."""
+    ACTION_COLUMN_WIDTH = 260
+    ACTION_ROW_HEIGHT = 52
+    ACTION_BUTTON_HEIGHT = 36
+
     def __init__(self, parent=None, is_account_mode=True):
         super().__init__(parent)
         self.is_account_mode = is_account_mode  # True: Tài khoản, False: Đơn hàng
         
         self.setWindowTitle("Thùng Rác - Tài Khoản" if self.is_account_mode else "Thùng Rác - Đơn Hàng")
-        self.resize(750, 450)
+        self.resize(900, 450)
+        self.setMinimumWidth(800)
         self.setModal(True)
         
         self.init_ui()
@@ -592,6 +597,11 @@ class TrashBinDialog(QDialog):
         
         # Bảng hiển thị
         self.table = CopyableTableWidget()
+        self.table.setObjectName("TrashTable")
+        # Chừa thêm không gian thực cho widget ở cột Thao tác (theme chung dùng 10px).
+        self.table.setStyleSheet(
+            "QTableWidget#TrashTable::item { padding: 0 5px; }"
+        )
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.table.setAlternatingRowColors(True)
         
@@ -611,6 +621,13 @@ class TrashBinDialog(QDialog):
         else:
             header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
             header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+
+        # Cột thao tác luôn đủ chỗ cho hai nút và không bị co khi dialog đổi cỡ.
+        action_column = len(self.headers) - 1
+        header.setSectionResizeMode(action_column, QHeaderView.ResizeMode.Fixed)
+        self.table.setColumnWidth(action_column, self.ACTION_COLUMN_WIDTH)
+        self.table.verticalHeader().setMinimumSectionSize(self.ACTION_ROW_HEIGHT)
+        self.table.verticalHeader().setDefaultSectionSize(self.ACTION_ROW_HEIGHT)
             
         layout.addWidget(self.table)
         self.table.ApplyDataGridViewTheme()
@@ -670,42 +687,58 @@ class TrashBinDialog(QDialog):
                 # Buttons
                 self.table.setCellWidget(row_idx, 5, self.create_action_widget(row['id']))
 
+        # setRowCount() tạo lại các hàng, nên áp chiều cao sau khi nạp dữ liệu.
+        for row_idx in range(self.table.rowCount()):
+            self.table.setRowHeight(row_idx, self.ACTION_ROW_HEIGHT)
+
         self.table.ApplyDataGridViewTheme()
 
     def create_action_widget(self, item_id):
         """Tạo cột Thao tác chứa 2 nút: Khôi phục & Xóa vĩnh viễn."""
         widget = QWidget()
+        widget.setObjectName("TrashActionCell")
         layout = QHBoxLayout(widget)
-        layout.setContentsMargins(5, 2, 5, 2)
+        layout.setContentsMargins(1, 0, 1, 0)
         layout.setSpacing(8)
+        layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
         
         # Nút Khôi phục
-        restore_btn = QPushButton("Khôi phục")
+        restore_btn = QPushButton("↩ Khôi phục")
+        restore_btn.setFixedSize(102, self.ACTION_BUTTON_HEIGHT)
         restore_btn.setStyleSheet("""
             QPushButton {
                 background-color: #2e7d32;
                 color: white;
                 border: none;
-                border-radius: 3px;
-                padding: 4px 8px;
-                font-size: 11px;
+                border-radius: 7px;
+                padding: 0;
+                font-size: 9px;
+                font-weight: 600;
+                min-height: 36px;
+                max-height: 36px;
             }
             QPushButton:hover { background-color: #388e3c; }
+            QPushButton:pressed { background-color: #1b5e20; }
         """)
         restore_btn.clicked.connect(lambda: self.on_restore(item_id))
         
         # Nút Xóa vĩnh viễn
-        delete_btn = QPushButton("Xóa vĩnh viễn")
+        delete_btn = QPushButton("🗑 Xóa vĩnh viễn")
+        delete_btn.setFixedSize(138, self.ACTION_BUTTON_HEIGHT)
         delete_btn.setStyleSheet("""
             QPushButton {
                 background-color: #c62828;
                 color: white;
                 border: none;
-                border-radius: 3px;
-                padding: 4px 8px;
-                font-size: 11px;
+                border-radius: 7px;
+                padding: 0;
+                font-size: 9px;
+                font-weight: 600;
+                min-height: 36px;
+                max-height: 36px;
             }
             QPushButton:hover { background-color: #d32f2f; }
+            QPushButton:pressed { background-color: #b71c1c; }
         """)
         delete_btn.clicked.connect(lambda: self.on_delete_permanent(item_id))
         

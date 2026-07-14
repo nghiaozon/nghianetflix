@@ -18,7 +18,9 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.13"
+          # Keep CI aligned with the Python version used for the verified local
+          # release build; changing it changes the embedded python3xx.dll.
+          python-version: "3.14"
           cache: pip
 
       - name: Install dependencies

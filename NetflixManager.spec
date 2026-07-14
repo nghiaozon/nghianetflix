@@ -29,7 +29,10 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    # Avoid post-processing DLLs in the one-file archive. Besides being
+    # unnecessary for this app, packed binaries are more prone to AV scanning
+    # interference while PyInstaller extracts its temporary _MEI runtime.
+    upx=False,
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,

@@ -4,4 +4,4 @@ python-dotenv
 gspread
 google-auth
 requests
-PyInstaller
+PyInstaller==6.21.0

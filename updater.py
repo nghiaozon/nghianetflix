@@ -217,24 +217,40 @@ def install_and_restart(prepared_exe: Path) -> None:
     ensure_installation_writable()
     current_exe = Path(sys.executable).resolve()
     helper = prepared_exe.parent / "apply_update.cmd"
-    helper.write_text(
-        "@echo off\nsetlocal\n"
-        f':wait\ntasklist /FI "PID eq {os.getpid()}" | find "{os.getpid()}" >nul\n'
-        "if not errorlevel 1 (timeout /t 1 /nobreak >nul & goto wait)\n"
-        f'move /Y "{current_exe}" "{current_exe}.old" >nul\n'
-        f'if errorlevel 1 goto failed\nmove /Y "{prepared_exe}" "{current_exe}" >nul\n'
-        f'if errorlevel 1 (move /Y "{current_exe}.old" "{current_exe}" >nul & goto failed)\n'
-        f'del /Q "{current_exe}.old" >nul 2>&1\nstart "" "{current_exe}"\n'
-        'rmdir /S /Q "%~dp0" >nul 2>&1\nexit /b 0\n'
-        f':failed\nstart "" "{current_exe}"\n'
-        'msg * "Cap nhat that bai. Phien ban cu da duoc giu nguyen." >nul 2>&1\nexit /b 1\n',
-        encoding="utf-8",
-    )
+    helper.write_text(_update_helper_script(current_exe, prepared_exe, os.getpid()), encoding="utf-8")
     subprocess.Popen(
         ["cmd.exe", "/c", str(helper)],
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         close_fds=True,
         cwd=str(app_dir()),
+    )
+
+
+def _update_helper_script(current_exe: Path, prepared_exe: Path, pid: int) -> str:
+    """Build the transactional Windows update script.
+
+    Keep the previous executable until the replacement has completed a frozen
+    runtime smoke test.  This catches failures that happen before Python starts
+    (for example, an anti-virus product removing python3xx.dll from PyInstaller's
+    temporary _MEI directory) and rolls the installation back automatically.
+    """
+    return (
+        "@echo off\nsetlocal\n"
+        f':wait\ntasklist /FI "PID eq {pid}" | find "{pid}" >nul\n'
+        "if not errorlevel 1 (timeout /t 1 /nobreak >nul & goto wait)\n"
+        f'del /Q "{current_exe}.old" >nul 2>&1\n'
+        f'move /Y "{current_exe}" "{current_exe}.old" >nul\n'
+        f'if errorlevel 1 goto failed\nmove /Y "{prepared_exe}" "{current_exe}" >nul\n'
+        "if errorlevel 1 goto rollback\n"
+        f'start "" /wait "{current_exe}" --self-test-update\n'
+        "if errorlevel 1 goto rollback\n"
+        f'start "" "{current_exe}"\n'
+        f'del /Q "{current_exe}.old" >nul 2>&1\n'
+        'rmdir /S /Q "%~dp0" >nul 2>&1\nexit /b 0\n'
+        f':rollback\ndel /Q "{current_exe}" >nul 2>&1\n'
+        f'move /Y "{current_exe}.old" "{current_exe}" >nul\n'
+        f':failed\nstart "" "{current_exe}"\n'
+        'msg * "Cap nhat that bai. Da tu dong khoi phuc phien ban cu." >nul 2>&1\nexit /b 1\n'
     )
 
 

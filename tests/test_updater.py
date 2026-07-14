@@ -95,6 +95,20 @@ class UpdaterTests(unittest.TestCase):
             with self.assertRaisesRegex(updater.UpdateError, "không có quyền ghi"):
                 updater.ensure_installation_writable(Path.cwd())
 
+    def test_update_helper_smoke_tests_before_deleting_backup(self):
+        script = updater._update_helper_script(
+            Path(r"C:\Apps\NetflixManager.exe"),
+            Path(r"C:\Temp\NetflixManager.exe"),
+            1234,
+        )
+        smoke_test = script.index('--self-test-update')
+        rollback_check = script.index('if errorlevel 1 goto rollback', smoke_test)
+        delete_backup = script.index('NetflixManager.exe.old" >nul 2>&1', rollback_check)
+        self.assertLess(smoke_test, rollback_check)
+        self.assertLess(rollback_check, delete_backup)
+        self.assertIn(':rollback', script)
+        self.assertIn('move /Y "C:\\Apps\\NetflixManager.exe.old"', script)
+
 
 if __name__ == "__main__":
     unittest.main()
