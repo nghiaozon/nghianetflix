@@ -1,12 +1,12 @@
 {
-    "version":  "1.0.8",
-    "download_url":  "https://github.com/nghiaozon/nghianetflix/releases/download/v1.0.8/NetflixManager.exe",
-    "changelog":  "Nâng cấp giao diện dark neon xanh tím, sidebar, bảng dữ liệu và phân trang.",
-    "package_type":  "exe",
-    "package_name":  "NetflixManager.exe",
-    "file_name":  "NetflixManager.exe",
-    "executable_name":  "NetflixManager.exe",
-    "sha256":  "f2bae62eb95b3abeffc87247e86beec17e222804b32068d347a69b8c7a52fee8",
-    "require_authenticode":  false,
-    "publisher":  ""
+  "version": "1.0.8",
+  "download_url": "https://github.com/nghiaozon/nghianetflix/releases/download/v1.0.8/NetflixManager.exe",
+  "changelog": "Xem ghi chú phát hành trên GitHub.",
+  "package_type": "exe",
+  "package_name": "NetflixManager.exe",
+  "file_name": "NetflixManager.exe",
+  "executable_name": "NetflixManager.exe",
+  "sha256": "72156157f9521770933b7827346df86f3df7d1702d2200082f1a7f97997c14f8",
+  "require_authenticode": false,
+  "publisher": ""
 }
