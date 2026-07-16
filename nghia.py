@@ -2,6 +2,7 @@
 
 import sys
 import os
+import math
 
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
@@ -183,6 +184,9 @@ class MainWindow(QMainWindow):
         # Biến lưu trữ dữ liệu tài khoản và đơn hàng hiện hành phục vụ cho thao tác
         self.current_accounts = []
         self.current_orders = []
+        self.all_accounts = []
+        self.acc_current_page = 1
+        self.acc_rows_per_page = 10
         self._update_thread = None
         self._update_worker = None
         self._pending_update_download = None
@@ -212,43 +216,72 @@ class MainWindow(QMainWindow):
         # --- 1. SIDEBAR BÊN TRÁI ---
         sidebar_frame = QFrame()
         sidebar_frame.setObjectName("SidebarFrame")
-        sidebar_frame.setFixedWidth(240)
+        sidebar_frame.setFixedWidth(272)
         sidebar_layout = QVBoxLayout(sidebar_frame)
-        sidebar_layout.setContentsMargins(14, 22, 14, 18)
-        sidebar_layout.setSpacing(8)
+        sidebar_layout.setContentsMargins(16, 20, 16, 16)
+        sidebar_layout.setSpacing(7)
         
         # Tiêu đề Sidebar thương hiệu (Netflix Store ozon)
+        avatar_frame = QFrame()
+        avatar_frame.setObjectName("AvatarFrame")
+        avatar_frame.setFixedSize(116, 116)
+        avatar_layout = QVBoxLayout(avatar_frame)
+        avatar_layout.setContentsMargins(6, 6, 6, 6)
         brand_label = QLabel()
         brand_label.setPixmap(
             QPixmap(resource_path("assets/app-logo-circle.png")).scaled(
-                112, 112,
+                102, 102,
                 Qt.AspectRatioMode.KeepAspectRatio,
                 Qt.TransformationMode.SmoothTransformation,
             )
         )
-        brand_label.setFixedHeight(122)
         brand_label.setToolTip("Netflix Ozon")
         brand_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        sidebar_layout.addWidget(brand_label)
+        brand_label.setStyleSheet("background: transparent; border-radius: 51px;")
+        avatar_layout.addWidget(brand_label)
+        avatar_shadow = QGraphicsDropShadowEffect(avatar_frame)
+        avatar_shadow.setBlurRadius(26)
+        avatar_shadow.setOffset(0, 0)
+        avatar_shadow.setColor(QColor(72, 88, 255, 155))
+        avatar_frame.setGraphicsEffect(avatar_shadow)
+        sidebar_layout.addWidget(avatar_frame, 0, Qt.AlignmentFlag.AlignHCenter)
+
+        user_name = QLabel("Nghiazon")
+        user_name.setObjectName("UserName")
+        user_name.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        sidebar_layout.addWidget(user_name)
+
+        admin_badge = QLabel("♛  Admin")
+        admin_badge.setObjectName("AdminBadge")
+        admin_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        admin_badge.setFixedHeight(25)
+        admin_badge.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        sidebar_layout.addWidget(admin_badge, 0, Qt.AlignmentFlag.AlignHCenter)
         
         # Thanh phân tách mỏng
         line = QFrame()
+        line.setObjectName("SidebarDivider")
         line.setFrameShape(QFrame.Shape.HLine)
-        line.setFrameShadow(QFrame.Shadow.Sunken)
-        line.setStyleSheet("background-color: #222222; max-height: 1px; margin-bottom: 15px;")
+        line.setFixedHeight(1)
         sidebar_layout.addWidget(line)
         
         # Các nút điều hướng Sidebar
         self.nav_group = QButtonGroup(self)
         self.nav_group.setExclusive(True)
         
-        self.btn_accounts = QPushButton("👤  Tài Khoản")
-        self.btn_orders = QPushButton("📦  Đơn Hàng")
-        self.btn_charts = QPushButton("📊  Biểu Đồ (Tổng quan)")
+        self.btn_accounts = QPushButton("●   Tài Khoản")
+        self.btn_orders = QPushButton("◆   Đơn Hàng")
+        self.btn_charts = QPushButton("▰   Biểu Đồ (Tổng quan)")
+        self.btn_apps = QPushButton("✦   Ứng Dụng & Phần Mềm")
+        self.btn_settings = QPushButton("⚙   Cài Đặt")
         
-        for idx, btn in enumerate([self.btn_accounts, self.btn_orders, self.btn_charts]):
+        for idx, btn in enumerate([
+            self.btn_accounts, self.btn_orders, self.btn_charts,
+            self.btn_apps, self.btn_settings
+        ]):
             btn.setCheckable(True)
             btn.setProperty("class", "SidebarButton")
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
             self.nav_group.addButton(btn, idx)
             sidebar_layout.addWidget(btn)
             
@@ -257,35 +290,36 @@ class MainWindow(QMainWindow):
         
         # Google Sheets Sync Status
         self.sync_status_label = QLabel("⚠  Sheets")
-        self.sync_status_label.setStyleSheet("color: #8391A7; font-size: 11px;")
+        self.sync_status_label.setObjectName("SyncStatusBox")
         self.sync_status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.sync_status_label.setWordWrap(False)
         sidebar_layout.addWidget(self.sync_status_label)
         
         # Nút Đồng bộ Google Sheets
-        btn_sync = QPushButton("🔄 Đồng bộ Sheets")
-        btn_sync.setProperty("class", "SecondaryButton")
-        btn_sync.setStyleSheet("background-color: #1976D2; color: white; font-size: 11px; padding: 6px;")
-        btn_sync.clicked.connect(self.on_sync_sheets_clicked)
-        btn_sync.setToolTip("Đồng bộ dữ liệu lên Google Sheets")
-        sidebar_layout.addWidget(btn_sync)
+        self.btn_sync = QPushButton("⟳  Đồng bộ Sheets")
+        self.btn_sync.setProperty("class", "SyncButton")
+        self.btn_sync.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_sync.clicked.connect(self.on_sync_sheets_clicked)
+        self.btn_sync.setToolTip("Đồng bộ dữ liệu lên Google Sheets")
+        sidebar_layout.addWidget(self.btn_sync)
 
         self.btn_update = QPushButton("⬇ Cập nhật phần mềm")
         self.btn_update.setProperty("class", "SecondaryButton")
+        self.btn_update.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_update.setToolTip("Kiểm tra và tải phiên bản mới")
         self.btn_update.clicked.connect(self.on_update_clicked)
         sidebar_layout.addWidget(self.btn_update)
         
         # Thanh phân tách
         line2 = QFrame()
+        line2.setObjectName("SidebarDivider")
         line2.setFrameShape(QFrame.Shape.HLine)
-        line2.setFrameShadow(QFrame.Shadow.Sunken)
-        line2.setStyleSheet("background-color: #222222; max-height: 1px; margin-bottom: 10px; margin-top: 10px;")
+        line2.setFixedHeight(1)
         sidebar_layout.addWidget(line2)
         
         # Thông tin bản quyền / phiên bản ở đáy sidebar
-        version_label = QLabel(f"Version {APP_VERSION}\nDeveloped by Nghĩaozon")
-        version_label.setStyleSheet("color: #555555; font-size: 11px;")
+        version_label = QLabel(f"Version {APP_VERSION}\nDeveloped by Nghiazon")
+        version_label.setObjectName("VersionLabel")
         version_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         sidebar_layout.addWidget(version_label)
         
@@ -302,6 +336,8 @@ class MainWindow(QMainWindow):
         self.setup_accounts_tab()
         self.setup_orders_tab()
         self.setup_charts_tab()
+        self.setup_apps_tab()
+        self.setup_settings_tab()
         
         main_layout.addWidget(self.content_stack, 1)
         
@@ -433,26 +469,47 @@ class MainWindow(QMainWindow):
     
     def setup_accounts_tab(self):
         page = QWidget()
+        page.setObjectName("PageRoot")
         layout = QVBoxLayout(page)
-        layout.setContentsMargins(28, 24, 28, 24)
-        layout.setSpacing(18)
+        layout.setContentsMargins(30, 25, 30, 25)
+        layout.setSpacing(16)
         
         # --- Tiêu đề & Công cụ tìm kiếm phía trên ---
-        top_bar_layout = QHBoxLayout()
-        top_bar_layout.setSpacing(10)
-        
+        header_layout = QHBoxLayout()
+        header_text = QVBoxLayout()
+        header_text.setSpacing(4)
         title_label = QLabel("Danh Sách Tài Khoản")
         title_label.setProperty("class", "TabTitle")
-        layout.addWidget(title_label)
+        subtitle_label = QLabel("Quản lý và theo dõi tất cả tài khoản của bạn")
+        subtitle_label.setProperty("class", "PageSubtitle")
+        header_text.addWidget(title_label)
+        header_text.addWidget(subtitle_label)
+        header_layout.addLayout(header_text)
+        header_layout.addStretch()
+        ornament = QLabel("◈   ✦   ◇")
+        ornament.setStyleSheet(
+            "color:#756BFF; font-size:22px; font-weight:700; background:transparent; padding:8px 16px;"
+        )
+        header_layout.addWidget(ornament)
+        layout.addLayout(header_layout)
+
+        toolbar_card = QFrame()
+        toolbar_card.setObjectName("ToolbarCard")
+        top_bar_layout = QHBoxLayout()
+        toolbar_card.setLayout(top_bar_layout)
+        top_bar_layout.setContentsMargins(14, 14, 14, 14)
+        top_bar_layout.setSpacing(10)
         
         # Ô Tìm kiếm
         self.acc_search_input = QLineEdit()
-        self.acc_search_input.setPlaceholderText("Tìm kiếm tài khoản (Email)...")
+        self.acc_search_input.setPlaceholderText("⌕  Tìm kiếm tài khoản (Email, dịch vụ...)")
         self.acc_search_input.setMinimumWidth(220)
         self.acc_search_input.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
         )
-        self.acc_search_input.textChanged.connect(self.refresh_accounts) # Tìm kiếm ngay khi gõ rất tiện
+        self.acc_search_input.textChanged.connect(
+            lambda _text: self.refresh_accounts(reset_page=True)
+        )
         top_bar_layout.addWidget(self.acc_search_input, 1)
         
         # Bộ lọc trạng thái
@@ -465,14 +522,14 @@ class MainWindow(QMainWindow):
         top_bar_layout.addWidget(self.acc_filter_combo)
         
         # Nút áp dụng bộ lọc
-        btn_apply = QPushButton("Áp dụng")
-        btn_apply.clicked.connect(self.refresh_accounts)
+        btn_apply = QPushButton("✓  Áp dụng")
+        btn_apply.clicked.connect(lambda: self.refresh_accounts(reset_page=True))
         top_bar_layout.addWidget(btn_apply)
         
         # Nút thêm mới tài khoản
-        btn_add = QPushButton("+ Thêm tài khoản")
+        btn_add = QPushButton("＋  Thêm tài khoản")
         btn_add.setProperty("class", "PrimaryButton")
-        btn_add.setStyleSheet("background-color: #0078D4; color: white; font-weight: bold;")
+        btn_add.setCursor(Qt.CursorShape.PointingHandCursor)
         btn_add.clicked.connect(self.on_add_account_clicked)
         top_bar_layout.addWidget(btn_add)
         
@@ -482,9 +539,15 @@ class MainWindow(QMainWindow):
         btn_trash.clicked.connect(self.on_account_trash_clicked)
         top_bar_layout.addWidget(btn_trash)
         
-        layout.addLayout(top_bar_layout)
+        layout.addWidget(toolbar_card)
         
         # --- Bảng hiển thị thông tin tài khoản ---
+        table_card = QFrame()
+        table_card.setObjectName("TableCard")
+        table_card_layout = QVBoxLayout(table_card)
+        table_card_layout.setContentsMargins(1, 1, 1, 10)
+        table_card_layout.setSpacing(8)
+
         self.acc_table = CopyableTableWidget()
         self.acc_table.set_row_action_callbacks(
             lambda row: self.on_edit_account_clicked(self.current_accounts[row]),
@@ -514,14 +577,48 @@ class MainWindow(QMainWindow):
         header.resizeSection(0, 50)
         header.resizeSection(3, 76)
         header.resizeSection(6, 150)
-        header.resizeSection(8, 192)
+        header.resizeSection(8, 104)
         self.acc_table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.acc_table.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
         
-        layout.addWidget(self.acc_table)
+        table_card_layout.addWidget(self.acc_table, 1)
         # Đặt chiều cao hàng mặc định để chứa các nút hành động
         self.acc_table.verticalHeader().setDefaultSectionSize(50)
         self.acc_table.ApplyDataGridViewTheme()
+
+        pagination_layout = QHBoxLayout()
+        pagination_layout.setContentsMargins(12, 0, 12, 0)
+        self.acc_results_label = QLabel("Hiển thị 0 kết quả")
+        self.acc_results_label.setObjectName("PaginationLabel")
+        pagination_layout.addWidget(self.acc_results_label)
+        pagination_layout.addStretch()
+
+        self.acc_prev_button = QPushButton("‹")
+        self.acc_prev_button.setProperty("class", "PageButton")
+        self.acc_prev_button.setToolTip("Trang trước")
+        self.acc_prev_button.clicked.connect(lambda: self.change_account_page(-1))
+        pagination_layout.addWidget(self.acc_prev_button)
+
+        self.acc_page_button = QPushButton("1")
+        self.acc_page_button.setProperty("class", "PageCurrent")
+        self.acc_page_button.setFixedSize(36, 36)
+        self.acc_page_button.setEnabled(False)
+        pagination_layout.addWidget(self.acc_page_button)
+
+        self.acc_next_button = QPushButton("›")
+        self.acc_next_button.setProperty("class", "PageButton")
+        self.acc_next_button.setToolTip("Trang sau")
+        self.acc_next_button.clicked.connect(lambda: self.change_account_page(1))
+        pagination_layout.addWidget(self.acc_next_button)
+        pagination_layout.addSpacing(20)
+
+        self.acc_rows_combo = QComboBox()
+        self.acc_rows_combo.addItems(["10 / trang", "20 / trang", "50 / trang"])
+        self.acc_rows_combo.setFixedWidth(112)
+        self.acc_rows_combo.currentIndexChanged.connect(self.change_account_page_size)
+        pagination_layout.addWidget(self.acc_rows_combo)
+        table_card_layout.addLayout(pagination_layout)
+        layout.addWidget(table_card, 1)
         
         self.content_stack.addWidget(page)
 
@@ -529,20 +626,27 @@ class MainWindow(QMainWindow):
         """Cập nhật trạng thái tài khoản tự động dựa trên ngày hết hạn trước khi hiển thị."""
         database.sync_account_status_by_expire_date()
 
-    def refresh_accounts(self):
+    def refresh_accounts(self, *_args, reset_page=False):
         """Truy vấn cơ sở dữ liệu và tải lại bảng danh sách tài khoản."""
         self.update_account_status_by_expire_date()
         search_query = self.acc_search_input.text().strip()
         status_filter = self.acc_filter_combo.currentText()
-        
-        self.current_accounts = database.get_accounts(search_query, status_filter)
+
+        self.all_accounts = database.get_accounts(search_query, status_filter)
+        if reset_page:
+            self.acc_current_page = 1
+        total_pages = max(1, math.ceil(len(self.all_accounts) / self.acc_rows_per_page))
+        self.acc_current_page = min(max(1, self.acc_current_page), total_pages)
+        start_index = (self.acc_current_page - 1) * self.acc_rows_per_page
+        end_index = start_index + self.acc_rows_per_page
+        self.current_accounts = self.all_accounts[start_index:end_index]
         
         self.acc_table.setRowCount(0)
         self.acc_table.setRowCount(len(self.current_accounts))
         
         for idx, row in enumerate(self.current_accounts):
             # Cột [STT] đánh lại theo danh sách hiện đang hiển thị.
-            stt_item = QTableWidgetItem(str(idx + 1))
+            stt_item = QTableWidgetItem(str(start_index + idx + 1))
             stt_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             self.acc_table.setItem(idx, 0, stt_item)
 
@@ -588,13 +692,33 @@ class MainWindow(QMainWindow):
         # Re-apply after every reload so new rows/items/widgets never inherit
         # colours from the Windows theme.
         self.acc_table.ApplyDataGridViewTheme()
+        visible_start = start_index + 1 if self.all_accounts else 0
+        visible_end = min(end_index, len(self.all_accounts))
+        self.acc_results_label.setText(
+            f"Hiển thị {visible_start}–{visible_end} trong {len(self.all_accounts)} kết quả"
+        )
+        self.acc_page_button.setText(str(self.acc_current_page))
+        self.acc_prev_button.setEnabled(self.acc_current_page > 1)
+        self.acc_next_button.setEnabled(self.acc_current_page < total_pages)
+
+    def change_account_page(self, direction):
+        """Đổi trang hiển thị; không thay đổi truy vấn hay dữ liệu tài khoản."""
+        self.acc_current_page += direction
+        self.refresh_accounts()
+
+    def change_account_page_size(self, index):
+        """Thay số dòng hiển thị trên một trang."""
+        sizes = (10, 20, 50)
+        self.acc_rows_per_page = sizes[index] if 0 <= index < len(sizes) else 10
+        self.acc_current_page = 1
+        self.refresh_accounts()
 
     def create_status_badge(self, status):
         """Create a compact status pill that remains readable on alternating rows."""
         colors = {
-            "Đang hoạt động": ("#173d2a", "#86efac"),
-            "Đã hết hạn": ("#451f28", "#fda4af"),
-            "Đã bán": ("#18375f", "#93c5fd"),
+            "Đang hoạt động": ("#123B2B", "#69F59A"),
+            "Đã hết hạn": ("#47202A", "#FF9BAA"),
+            "Đã bán": ("#18375F", "#93C5FD"),
         }
         background, foreground = colors.get(status, ("#263447", "#cbd5e1"))
         label = QLabel(status or "—")
@@ -616,61 +740,35 @@ class MainWindow(QMainWindow):
         return wrapper
 
     def create_action_buttons_for_account(self, account_data):
-        """Tạo widget chứa nút Bút chì và Thùng rác đỏ cho từng dòng tài khoản."""
+        """Tạo cụm nút icon Sửa/Xóa nhưng giữ nguyên callback nghiệp vụ."""
         widget = QWidget()
         layout = QHBoxLayout(widget)
         layout.setContentsMargins(4, 3, 4, 3)
-        layout.setSpacing(8)
+        layout.setSpacing(7)
         layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
         widget.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
-        widget.setFixedWidth(192)
+        widget.setFixedWidth(92)
         
         # Nút Sửa (Bút chì - xanh lục)
-        edit_btn = QPushButton("Chỉnh sửa")
+        edit_btn = QPushButton("")
         edit_btn.setToolTip("Chỉnh sửa thông tin tài khoản")
         edit_btn.setIcon(QIcon(resource_path("assets/edit.svg")))
-        edit_btn.setIconSize(QSize(14, 14))
-        edit_btn.setFixedSize(96, 32)
+        edit_btn.setIconSize(QSize(16, 16))
+        edit_btn.setFixedSize(34, 32)
         edit_btn.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-        edit_btn.setStyleSheet("""
-            QPushButton {
-                min-height: 30px;
-                max-height: 32px;
-                background-color: #30343b;
-                border: 1px solid #454b55;
-                border-radius: 7px;
-                color: #f3f4f6;
-                font-size: 12px;
-                font-weight: 700;
-                padding: 0 8px;
-            }
-            QPushButton:hover { background-color: #3b4048; border-color: #59616d; }
-            QPushButton:pressed { background-color: #272b31; }
-        """)
+        edit_btn.setProperty("class", "ActionEdit")
+        edit_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         edit_btn.clicked.connect(lambda: self.on_edit_account_clicked(account_data))
         
         # Nút Xóa (Thùng rác - đỏ)
-        delete_btn = QPushButton("Xóa")
+        delete_btn = QPushButton("")
         delete_btn.setToolTip("Đưa tài khoản vào Thùng rác")
         delete_btn.setIcon(QIcon(resource_path("assets/trash.svg")))
-        delete_btn.setIconSize(QSize(14, 14))
-        delete_btn.setFixedSize(72, 32)
+        delete_btn.setIconSize(QSize(16, 16))
+        delete_btn.setFixedSize(34, 32)
         delete_btn.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-        delete_btn.setStyleSheet("""
-            QPushButton {
-                min-height: 30px;
-                max-height: 32px;
-                background-color: #451f28;
-                border: 1px solid #6b2c3b;
-                border-radius: 7px;
-                color: #fda4af;
-                font-size: 12px;
-                font-weight: 700;
-                padding: 0 8px;
-            }
-            QPushButton:hover { background-color: #592530; border-color: #8a3a4c; }
-            QPushButton:pressed { background-color: #381820; }
-        """)
+        delete_btn.setProperty("class", "ActionDelete")
+        delete_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         delete_btn.clicked.connect(lambda: self.on_delete_account_clicked(account_data))
         
         layout.addWidget(edit_btn)
@@ -702,9 +800,10 @@ class MainWindow(QMainWindow):
         btn.setToolTip(tooltip)
         btn.setFixedSize(44, 28)
         btn.setStyleSheet(
-            "QPushButton{min-height:26px; max-height:26px; background-color:#1976D2; "
-            "color:white; border-radius:14px; padding:0; font-weight:bold;}"
-            "QPushButton:hover{background-color:#1e88e5;}"
+            "QPushButton{min-height:26px; max-height:26px; "
+            "background:qlineargradient(x1:0,y1:0,x2:1,y2:0,stop:0 #2588FF,stop:1 #5264EE); "
+            "color:white; border:1px solid #5DA3FF; border-radius:14px; padding:0; font-weight:bold;}"
+            "QPushButton:hover{background:qlineargradient(x1:0,y1:0,x2:1,y2:0,stop:0 #45A0FF,stop:1 #745BFF); border-color:#A3C8FF;}"
         )
         btn.clicked.connect(lambda _, acc=account_data: self.view_customers_for_account(acc))
 
@@ -788,6 +887,10 @@ class MainWindow(QMainWindow):
     def on_sync_sheets_clicked(self):
         """Đồng bộ dữ liệu lên Google Sheets."""
         self.sync_status_label.setText("⏳ Đang đồng bộ...")
+        self.sync_status_label.setStyleSheet(
+            "background:#17213A; color:#B7C5FF; border:1px solid #475A9B; "
+            "border-radius:8px; padding:9px; font-size:11px; font-weight:600;"
+        )
         
         success, msg = database.sync_all_to_sheets()
         if success:
@@ -808,11 +911,17 @@ class MainWindow(QMainWindow):
         if connected:
             self.sync_status_label.setText("●  Sheets đã kết nối")
             self.sync_status_label.setToolTip(status)
-            self.sync_status_label.setStyleSheet("color: #62DFA0; font-size: 11px;")
+            self.sync_status_label.setStyleSheet(
+                "background:#10271E; color:#69F59A; border:1px solid #24523B; "
+                "border-radius:8px; padding:9px; font-size:11px; font-weight:600;"
+            )
         else:
             self.sync_status_label.setText("⚠  Sheets chưa kết nối")
             self.sync_status_label.setToolTip(status)
-            self.sync_status_label.setStyleSheet("color: #F0B65B; font-size: 11px;")
+            self.sync_status_label.setStyleSheet(
+                "background:#211C12; color:#F7BE4C; border:1px solid #55431F; "
+                "border-radius:8px; padding:9px; font-size:11px; font-weight:600;"
+            )
 
 
     # ==========================================
@@ -821,21 +930,32 @@ class MainWindow(QMainWindow):
     
     def setup_orders_tab(self):
         page = QWidget()
+        page.setObjectName("PageRoot")
         layout = QVBoxLayout(page)
-        layout.setContentsMargins(28, 24, 28, 24)
-        layout.setSpacing(18)
+        layout.setContentsMargins(30, 25, 30, 25)
+        layout.setSpacing(16)
         
         # --- Tiêu đề & Công cụ tìm kiếm phía trên ---
-        top_bar_layout = QHBoxLayout()
-        top_bar_layout.setSpacing(10)
-        
+        header_layout = QVBoxLayout()
+        header_layout.setSpacing(4)
         title_label = QLabel("Danh Sách Đơn Hàng")
         title_label.setProperty("class", "TabTitle")
-        layout.addWidget(title_label)
+        subtitle_label = QLabel("Theo dõi khách hàng, thời hạn và doanh thu của từng đơn hàng")
+        subtitle_label.setProperty("class", "PageSubtitle")
+        header_layout.addWidget(title_label)
+        header_layout.addWidget(subtitle_label)
+        layout.addLayout(header_layout)
+
+        toolbar_card = QFrame()
+        toolbar_card.setObjectName("ToolbarCard")
+        top_bar_layout = QHBoxLayout()
+        toolbar_card.setLayout(top_bar_layout)
+        top_bar_layout.setContentsMargins(14, 14, 14, 14)
+        top_bar_layout.setSpacing(10)
         
         # Ô Tìm kiếm đơn hàng
         self.order_search_input = QLineEdit()
-        self.order_search_input.setPlaceholderText("Tìm kiếm đơn hàng (Email, Tên, Mã)...")
+        self.order_search_input.setPlaceholderText("⌕  Tìm kiếm đơn hàng (Email, tên, mã...)")
         self.order_search_input.setMinimumWidth(230)
         self.order_search_input.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
@@ -852,7 +972,7 @@ class MainWindow(QMainWindow):
         top_bar_layout.addWidget(self.order_filter_combo)
         
         # Nút áp dụng bộ lọc đơn hàng
-        btn_apply = QPushButton("Áp dụng")
+        btn_apply = QPushButton("✓  Áp dụng")
         btn_apply.clicked.connect(self.refresh_orders)
         top_bar_layout.addWidget(btn_apply)
         
@@ -863,9 +983,9 @@ class MainWindow(QMainWindow):
         top_bar_layout.addWidget(btn_clear_filter)
         
         # Nút thêm mới đơn hàng
-        btn_add = QPushButton("+ Thêm đơn hàng")
+        btn_add = QPushButton("＋  Thêm đơn hàng")
         btn_add.setProperty("class", "PrimaryButton")
-        btn_add.setStyleSheet("background-color: #0078D4; color: white; font-weight: bold;")
+        btn_add.setCursor(Qt.CursorShape.PointingHandCursor)
         btn_add.clicked.connect(self.on_add_order_clicked)
         top_bar_layout.addWidget(btn_add)
         
@@ -875,9 +995,13 @@ class MainWindow(QMainWindow):
         btn_trash.clicked.connect(self.on_order_trash_clicked)
         top_bar_layout.addWidget(btn_trash)
         
-        layout.addLayout(top_bar_layout)
+        layout.addWidget(toolbar_card)
         
         # --- Bảng hiển thị thông tin đơn hàng ---
+        table_card = QFrame()
+        table_card.setObjectName("TableCard")
+        table_card_layout = QVBoxLayout(table_card)
+        table_card_layout.setContentsMargins(1, 1, 1, 1)
         self.order_table = CopyableTableWidget()
         self.order_table.set_row_action_callbacks(
             lambda row: self.on_edit_order_clicked(self.current_orders[row]),
@@ -903,11 +1027,12 @@ class MainWindow(QMainWindow):
         header.setSectionResizeMode(9, QHeaderView.ResizeMode.Fixed)  # Thao tác
         header.resizeSection(0, 50)
         header.resizeSection(8, 150)
-        header.resizeSection(9, 192)
+        header.resizeSection(9, 104)
         self.order_table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.order_table.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
         
-        layout.addWidget(self.order_table)
+        table_card_layout.addWidget(self.order_table)
+        layout.addWidget(table_card, 1)
         # Đặt chiều cao hàng mặc định cho bảng đơn hàng
         self.order_table.verticalHeader().setDefaultSectionSize(50)
         self.order_table.ApplyDataGridViewTheme()
@@ -1012,61 +1137,35 @@ class MainWindow(QMainWindow):
                 highlight_expired_status(status_item)
 
     def create_action_buttons_for_order(self, order_data):
-        """Tạo widget chứa nút Bút chì và Thùng rác đỏ cho từng dòng đơn hàng."""
+        """Tạo cụm nút icon Sửa/Xóa nhưng giữ nguyên callback nghiệp vụ."""
         widget = QWidget()
         layout = QHBoxLayout(widget)
         layout.setContentsMargins(4, 3, 4, 3)
         layout.setSpacing(8)
         layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
         widget.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
-        widget.setFixedWidth(192)
+        widget.setFixedWidth(92)
         
         # Nút Sửa
-        edit_btn = QPushButton("Chỉnh sửa")
+        edit_btn = QPushButton("")
         edit_btn.setToolTip("Chỉnh sửa thông tin đơn hàng")
         edit_btn.setIcon(QIcon(resource_path("assets/edit.svg")))
-        edit_btn.setIconSize(QSize(14, 14))
-        edit_btn.setFixedSize(96, 32)
+        edit_btn.setIconSize(QSize(16, 16))
+        edit_btn.setFixedSize(34, 32)
         edit_btn.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-        edit_btn.setStyleSheet("""
-            QPushButton {
-                min-height: 30px;
-                max-height: 32px;
-                background-color: #30343b;
-                border: 1px solid #454b55;
-                border-radius: 7px;
-                color: #f3f4f6;
-                font-size: 12px;
-                font-weight: 700;
-                padding: 0 8px;
-            }
-            QPushButton:hover { background-color: #3b4048; border-color: #59616d; }
-            QPushButton:pressed { background-color: #272b31; }
-        """)
+        edit_btn.setProperty("class", "ActionEdit")
+        edit_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         edit_btn.clicked.connect(lambda _, od=order_data: self.on_edit_order_clicked(od))
         
         # Nút Xóa
-        delete_btn = QPushButton("Xóa")
+        delete_btn = QPushButton("")
         delete_btn.setToolTip("Đưa đơn hàng vào Thùng rác")
         delete_btn.setIcon(QIcon(resource_path("assets/trash.svg")))
-        delete_btn.setIconSize(QSize(14, 14))
-        delete_btn.setFixedSize(72, 32)
+        delete_btn.setIconSize(QSize(16, 16))
+        delete_btn.setFixedSize(34, 32)
         delete_btn.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-        delete_btn.setStyleSheet("""
-            QPushButton {
-                min-height: 30px;
-                max-height: 32px;
-                background-color: #451f28;
-                border: 1px solid #6b2c3b;
-                border-radius: 7px;
-                color: #fda4af;
-                font-size: 12px;
-                font-weight: 700;
-                padding: 0 8px;
-            }
-            QPushButton:hover { background-color: #592530; border-color: #8a3a4c; }
-            QPushButton:pressed { background-color: #381820; }
-        """)
+        delete_btn.setProperty("class", "ActionDelete")
+        delete_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         delete_btn.clicked.connect(lambda _, od=order_data: self.on_delete_order_clicked(od))
         
         layout.addWidget(edit_btn)
@@ -1122,18 +1221,128 @@ class MainWindow(QMainWindow):
     # ==========================================
     # PHÂN HỆ 3: BIỂU ĐỒ & THỐNG KÊ (DASHBOARD)
     # ==========================================
+
+    def setup_apps_tab(self):
+        """Trang trình bày các tác vụ tích hợp đã có, không thêm nghiệp vụ mới."""
+        page = QWidget()
+        page.setObjectName("PageRoot")
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(30, 25, 30, 25)
+        layout.setSpacing(18)
+
+        title = QLabel("Ứng Dụng & Phần Mềm")
+        title.setProperty("class", "TabTitle")
+        subtitle = QLabel("Quản lý kết nối Google Sheets và phiên bản ứng dụng")
+        subtitle.setProperty("class", "PageSubtitle")
+        layout.addWidget(title)
+        layout.addWidget(subtitle)
+
+        cards = QHBoxLayout()
+        cards.setSpacing(16)
+
+        sheets_card = QFrame()
+        sheets_card.setObjectName("InfoCard")
+        sheets_layout = QVBoxLayout(sheets_card)
+        sheets_layout.setContentsMargins(24, 22, 24, 22)
+        sheets_layout.setSpacing(12)
+        sheets_icon = QLabel("◉")
+        sheets_icon.setStyleSheet("color:#3D9BFF; font-size:32px; background:transparent;")
+        sheets_title = QLabel("Google Sheets")
+        sheets_title.setProperty("class", "SectionTitle")
+        sheets_desc = QLabel("Đồng bộ dữ liệu tài khoản và đơn hàng bằng cấu hình hiện tại của ứng dụng.")
+        sheets_desc.setProperty("class", "PageSubtitle")
+        sheets_desc.setWordWrap(True)
+        sheets_button = QPushButton("⟳  Đồng bộ Sheets")
+        sheets_button.setProperty("class", "SyncButton")
+        sheets_button.clicked.connect(self.on_sync_sheets_clicked)
+        sheets_layout.addWidget(sheets_icon)
+        sheets_layout.addWidget(sheets_title)
+        sheets_layout.addWidget(sheets_desc)
+        sheets_layout.addStretch()
+        sheets_layout.addWidget(sheets_button)
+        cards.addWidget(sheets_card)
+
+        update_card = QFrame()
+        update_card.setObjectName("InfoCard")
+        update_layout = QVBoxLayout(update_card)
+        update_layout.setContentsMargins(24, 22, 24, 22)
+        update_layout.setSpacing(12)
+        update_icon = QLabel("⬇")
+        update_icon.setStyleSheet("color:#B35CFF; font-size:32px; background:transparent;")
+        update_title = QLabel("Cập nhật phần mềm")
+        update_title.setProperty("class", "SectionTitle")
+        update_desc = QLabel("Kiểm tra và cài đặt phiên bản mới bằng quy trình cập nhật an toàn sẵn có.")
+        update_desc.setProperty("class", "PageSubtitle")
+        update_desc.setWordWrap(True)
+        update_button = QPushButton("⬇  Kiểm tra cập nhật")
+        update_button.setProperty("class", "PrimaryButton")
+        update_button.clicked.connect(self.on_update_clicked)
+        update_layout.addWidget(update_icon)
+        update_layout.addWidget(update_title)
+        update_layout.addWidget(update_desc)
+        update_layout.addStretch()
+        update_layout.addWidget(update_button)
+        cards.addWidget(update_card)
+
+        layout.addLayout(cards, 1)
+        layout.addStretch()
+        self.content_stack.addWidget(page)
+
+    def setup_settings_tab(self):
+        """Trang thông tin giao diện; cố ý không ghi hay thay đổi cấu hình dữ liệu."""
+        page = QWidget()
+        page.setObjectName("PageRoot")
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(30, 25, 30, 25)
+        layout.setSpacing(18)
+
+        title = QLabel("Cài Đặt")
+        title.setProperty("class", "TabTitle")
+        subtitle = QLabel("Thông tin giao diện và trạng thái bảo toàn dữ liệu")
+        subtitle.setProperty("class", "PageSubtitle")
+        layout.addWidget(title)
+        layout.addWidget(subtitle)
+
+        theme_card = QFrame()
+        theme_card.setObjectName("InfoCard")
+        card_layout = QVBoxLayout(theme_card)
+        card_layout.setContentsMargins(24, 22, 24, 22)
+        card_layout.setSpacing(10)
+        card_title = QLabel("✦  Dark Neon")
+        card_title.setProperty("class", "SectionTitle")
+        card_desc = QLabel(
+            "Giao diện xanh tím hiện đại đang được áp dụng. Database, cấu hình Sheets "
+            "và toàn bộ luồng xử lý nghiệp vụ vẫn sử dụng nguyên trạng."
+        )
+        card_desc.setProperty("class", "PageSubtitle")
+        card_desc.setWordWrap(True)
+        safety = QLabel("✓  Dữ liệu được giữ nguyên     ✓  Callback hiện có được giữ nguyên")
+        safety.setStyleSheet(
+            "color:#69F59A; background:#10271E; border:1px solid #24523B; "
+            "border-radius:8px; padding:12px; font-weight:600;"
+        )
+        card_layout.addWidget(card_title)
+        card_layout.addWidget(card_desc)
+        card_layout.addSpacing(8)
+        card_layout.addWidget(safety)
+        layout.addWidget(theme_card)
+        layout.addStretch()
+        self.content_stack.addWidget(page)
     
     def setup_charts_tab(self):
         page = QWidget()
+        page.setObjectName("PageRoot")
         layout = QVBoxLayout(page)
-        layout.setContentsMargins(15, 10, 15, 15)
+        layout.setContentsMargins(30, 25, 30, 25)
         layout.setSpacing(15)
         
         # Tiêu đề Tab
         title_label = QLabel("Tổng Quan Hoạt Động Kinh Doanh")
         title_label.setProperty("class", "TabTitle")
-        title_label.setStyleSheet("font-size:24px; font-weight:700; color:#F8FAFC; background:transparent;")
         layout.addWidget(title_label)
+        subtitle_label = QLabel("Theo dõi doanh thu, đơn hàng và hiệu suất theo thời gian")
+        subtitle_label.setProperty("class", "PageSubtitle")
+        layout.addWidget(subtitle_label)
         
         # --- KHU VỰC 4 THẺ THỐNG KÊ (QHBoxLayout) ---
         cards_layout = QHBoxLayout()

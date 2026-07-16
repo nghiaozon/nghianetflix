@@ -589,9 +589,11 @@ class TrashBinDialog(QDialog):
 
     def init_ui(self):
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 22, 24, 20)
+        layout.setSpacing(14)
         
         title_label = QLabel("THÙNG RÁC - ĐÃ XÓA MỀM")
-        title_label.setStyleSheet("font-size: 16px; font-weight: bold; color: #AAAAAA; margin-bottom: 10px;")
+        title_label.setStyleSheet("font-size:20px; font-weight:700; color:#FFFFFF; margin-bottom:8px;")
         title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(title_label)
         
@@ -634,7 +636,7 @@ class TrashBinDialog(QDialog):
         
         # Hướng dẫn bên dưới
         help_label = QLabel("(*) Khôi phục sẽ đưa dữ liệu quay lại giao diện chính. Xóa vĩnh viễn không thể hoàn tác.")
-        help_label.setStyleSheet("font-style: italic; color: #888888; font-size: 11px;")
+        help_label.setStyleSheet("font-style:italic; color:#8391A7; font-size:11px;")
         layout.addWidget(help_label)
         
         # Nút Đóng
@@ -707,9 +709,9 @@ class TrashBinDialog(QDialog):
         restore_btn.setFixedSize(102, self.ACTION_BUTTON_HEIGHT)
         restore_btn.setStyleSheet("""
             QPushButton {
-                background-color: #2e7d32;
-                color: white;
-                border: none;
+                background-color: #123B2B;
+                color: #86EFAC;
+                border: 1px solid #286548;
                 border-radius: 7px;
                 padding: 0;
                 font-size: 9px;
@@ -717,8 +719,8 @@ class TrashBinDialog(QDialog):
                 min-height: 36px;
                 max-height: 36px;
             }
-            QPushButton:hover { background-color: #388e3c; }
-            QPushButton:pressed { background-color: #1b5e20; }
+            QPushButton:hover { background-color: #185239; border-color: #48B77D; }
+            QPushButton:pressed { background-color: #0E3022; }
         """)
         restore_btn.clicked.connect(lambda: self.on_restore(item_id))
         
@@ -727,9 +729,9 @@ class TrashBinDialog(QDialog):
         delete_btn.setFixedSize(138, self.ACTION_BUTTON_HEIGHT)
         delete_btn.setStyleSheet("""
             QPushButton {
-                background-color: #c62828;
-                color: white;
-                border: none;
+                background-color: #451F2A;
+                color: #FDA4AF;
+                border: 1px solid #783246;
                 border-radius: 7px;
                 padding: 0;
                 font-size: 9px;
@@ -737,8 +739,8 @@ class TrashBinDialog(QDialog):
                 min-height: 36px;
                 max-height: 36px;
             }
-            QPushButton:hover { background-color: #d32f2f; }
-            QPushButton:pressed { background-color: #b71c1c; }
+            QPushButton:hover { background-color: #612536; border-color: #B94460; }
+            QPushButton:pressed { background-color: #351721; }
         """)
         delete_btn.clicked.connect(lambda: self.on_delete_permanent(item_id))
         
