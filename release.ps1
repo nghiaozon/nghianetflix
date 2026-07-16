@@ -18,7 +18,9 @@ $Repository = "nghiaozon/nghianetflix"
 $ExecutableName = "NetflixManager.exe"
 $VersionFile = Join-Path $PSScriptRoot "app_version.py"
 $ManifestFile = Join-Path $PSScriptRoot "update.json"
-$Git = "C:\Program Files\Git\cmd\git.exe"
+$GitCommand = Get-Command git -ErrorAction SilentlyContinue
+if (-not $GitCommand) { throw "PHAT HANH THAT BAI: Khong tim thay Git trong PATH." }
+$Git = $GitCommand.Source
 
 function Write-Step([string]$Message) {
     Write-Host "`n==> $Message" -ForegroundColor Cyan
@@ -55,8 +57,6 @@ $originalManifestContent = Get-Content -LiteralPath $ManifestFile -Raw -Encoding
 $sourceCommitted = $false
 
 try {
-    if (-not (Test-Path -LiteralPath $Git)) { Fail "Khong tim thay Git tai $Git" }
-
     $currentVersion = Get-CurrentVersion
     if ([string]::IsNullOrWhiteSpace($Version)) {
         $Version = Get-NextVersion $currentVersion $Bump

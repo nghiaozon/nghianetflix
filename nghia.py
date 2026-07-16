@@ -46,6 +46,7 @@ class UpdateWorker(QObject):
                 result = updater.download_update(self.payload, self.progress.emit)
             self.finished.emit(result)
         except Exception as exc:
+            updater.log_exception("Update worker FAILED", exc)
             self.failed.emit(str(exc))
 
 
@@ -182,6 +183,9 @@ class MainWindow(QMainWindow):
         # Biến lưu trữ dữ liệu tài khoản và đơn hàng hiện hành phục vụ cho thao tác
         self.current_accounts = []
         self.current_orders = []
+        self._update_thread = None
+        self._update_worker = None
+        self._pending_update_download = None
         
         self.init_ui()
         
@@ -306,32 +310,54 @@ class MainWindow(QMainWindow):
 
     def _run_update_worker(self, action, payload, on_success, on_error=None):
         self.btn_update.setEnabled(False)
-        self._update_thread = QThread(self)
-        self._update_worker = UpdateWorker(action, payload)
-        self._update_worker.moveToThread(self._update_thread)
-        self._update_thread.started.connect(self._update_worker.run)
-        self._update_worker.finished.connect(on_success)
-        self._update_worker.finished.connect(self._update_thread.quit)
-        self._update_worker.failed.connect(on_error or self._on_update_error)
-        self._update_worker.failed.connect(self._update_thread.quit)
-        self._update_worker.progress.connect(
+        thread = QThread(self)
+        worker = UpdateWorker(action, payload)
+        self._update_thread = thread
+        self._update_worker = worker
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(on_success)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(on_error or self._on_update_error)
+        worker.failed.connect(thread.quit)
+        worker.progress.connect(
             lambda value: self.btn_update.setText(f"Đang tải... {value}%")
         )
-        self._update_thread.finished.connect(self._update_worker.deleteLater)
-        self._update_thread.finished.connect(self._update_thread.deleteLater)
-        self._update_thread.finished.connect(self._reset_update_button)
-        self._update_thread.start()
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(
+            lambda: self._on_update_thread_finished(thread, worker)
+        )
+        thread.finished.connect(thread.deleteLater)
+        thread.start()
+
+    def _on_update_thread_finished(self, thread, worker):
+        if self._update_thread is thread:
+            self._update_thread = None
+        if self._update_worker is worker:
+            self._update_worker = None
+        pending = self._pending_update_download
+        self._pending_update_download = None
+        if pending is not None:
+            self.btn_update.setText("Đang tải... 0%")
+            QTimer.singleShot(
+                0,
+                lambda info=pending: self._run_update_worker(
+                    "download", info, self._on_update_downloaded
+                ),
+            )
+        else:
+            self._reset_update_button()
 
     def _reset_update_button(self):
         self.btn_update.setText("⬇ Cập nhật phần mềm")
         self.btn_update.setEnabled(True)
 
     def on_update_clicked(self):
-        self.btn_update.setText("Đang kiểm tra...")
+        self.btn_update.setText("Đang kiểm tra bản cập nhật...")
         self._run_update_worker("check", None, self._on_update_checked)
 
     def check_update_on_startup(self):
-        if hasattr(self, "_update_thread") and self._update_thread.isRunning():
+        if self._update_thread is not None and self._update_thread.isRunning():
             return
         self._run_update_worker(
             "check", None, self._on_startup_update_checked, lambda _message: None
@@ -344,7 +370,7 @@ class MainWindow(QMainWindow):
     def _on_update_checked(self, info):
         if not info["update_available"]:
             QMessageBox.information(
-                self, "Cập nhật phần mềm", "Bạn đang dùng phiên bản mới nhất"
+                self, "Cập nhật phần mềm", "Bạn đang dùng phiên bản mới nhất."
             )
             return
         changelog = info.get("changelog") or "Không có thông tin thay đổi."
@@ -358,12 +384,16 @@ class MainWindow(QMainWindow):
         )
         if choice == QMessageBox.StandardButton.Yes:
             self.btn_update.setText("Đang tải... 0%")
-            self._run_update_worker("download", info, self._on_update_downloaded)
+            # Chờ thread kiểm tra kết thúc hẳn rồi mới tạo thread tải. Nếu tạo
+            # ngay trong signal finished, hai thread dùng chung thuộc tính UI
+            # và thread cũ có thể reset nút trong lúc bản mới đang tải.
+            self._pending_update_download = info
 
     def _on_update_downloaded(self, prepared_exe):
         try:
             updater.install_and_restart(prepared_exe)
         except Exception as exc:
+            updater.log_exception("Install FAILED", exc)
             self._on_update_error(str(exc))
             return
         QApplication.quit()

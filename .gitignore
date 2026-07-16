@@ -10,3 +10,5 @@ config/
 data/
 *.db
 fontlist-*.json
+update.log
+.netflixmanager-update-backup-*/

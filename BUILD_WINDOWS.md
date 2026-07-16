@@ -88,18 +88,32 @@ Các tùy chọn thường dùng:
 .\release.bat -NoPush                 # chỉ thử quy trình cục bộ, không upload
 ```
 
-Ứng dụng mới đọc manifest ổn định tại `releases/latest/download/update.json`; bản cũ vẫn đọc
-`update.json` trên nhánh `main`, nên script tiếp tục commit file này để tương thích.
+Ứng dụng gọi trực tiếp GitHub API tại
+`https://api.github.com/repos/nghiaozon/nghianetflix/releases/latest`, đọc `tag_name`, rồi chọn
+asset theo tên cố định. `update.json` vẫn được phát hành và workflow ghi lại bản có hash chính
+thức lên nhánh `main` để các bản app cũ tiếp tục cập nhật được.
+
+Tên asset được nhận, theo thứ tự ưu tiên:
+
+- `NetflixManager.exe` — bản portable một file, cách phát hành mặc định.
+- `NetflixManager-X.Y.Z.zip` hoặc `NetflixManager.zip` — ZIP phải chứa đúng một
+  `NetflixManager.exe`; toàn bộ cây file chương trình trong cùng thư mục sẽ được cập nhật.
+- `NetflixManager-Setup.exe` hoặc `NetflixManager-Installer.exe` — installer độc lập.
+
+Không đổi tên tùy ý (ví dụ `app-final.exe`) vì updater sẽ chủ động từ chối asset không thuộc
+danh sách trên. Mỗi asset phải có SHA-256 trong trường `digest` của GitHub API hoặc có asset
+sidecar cùng tên cộng `.sha256`, ví dụ `NetflixManager.exe.sha256`.
 
 ## Quy trình thủ công (tham khảo/xử lý sự cố)
 
 1. Tăng `APP_VERSION` trong `app_version.py` (ví dụ `1.0.0` thành `1.1.0`).
-2. Đặt URL raw/public của manifest vào `DEFAULT_UPDATE_MANIFEST_URL` trong file đó.
-3. Chạy `build.ps1`, rồi upload `dist\NetflixManager.exe` lên GitHub Releases hoặc server HTTPS.
+2. Kiểm tra `GITHUB_OWNER`, `GITHUB_REPOSITORY` và `GITHUB_RELEASE_API_URL` trong file đó.
+3. Chạy `build.ps1`, rồi tạo GitHub Release có tag `vX.Y.Z` và upload
+   `dist\NetflixManager.exe` với đúng tên này.
 4. Tính SHA-256 bằng `Get-FileHash dist\NetflixManager.exe -Algorithm SHA256`.
 5. Sao chép `update.json.example` thành `update.json`; sửa `version`, `download_url`,
    `package_type`, `package_name`, `executable_name`, `changelog` và **bắt buộc** điền `sha256`.
-6. Chỉ công bố manifest sau khi Release asset đã upload xong.
+6. Upload `NetflixManager.exe.sha256`; chỉ công bố Release sau khi các asset đã upload xong.
 7. Chạy workflow **Verify update release** trong GitHub Actions. Workflow tải manifest và
    Release asset công khai, sau đó đối chiếu SHA-256; chỉ phát hành khi job này thành công.
 
@@ -122,4 +136,4 @@ Lỗi mạng của lần kiểm tra nền không làm gián đoạn người dù
 hiển thị lỗi đầy đủ. Trước khi tải/cài, ứng dụng thử quyền ghi trong thư mục chứa EXE và
 hướng dẫn người dùng di chuyển ứng dụng hoặc dùng quyền phù hợp nếu thư mục bị khóa.
 
-App chỉ thay thế `NetflixManager.exe`. Các thư mục `data` và `config` không bị xóa hay ghi đè. Cấu hình mới nằm trong `config`; app sẽ tự sao chép `.env`/`credentials.json` từ vị trí cũ cạnh EXE vào đây một lần để tương thích.
+Updater luôn xác định EXE và thư mục ứng dụng từ runtime, không lưu đường dẫn vào config. Với gói EXE, app thay đúng file EXE đang chạy, kể cả khi người dùng đã đổi tên file. Với gói ZIP, app thay toàn bộ file chương trình có trong gói. Các thư mục `data`, `config`, `excel`, `database`, `credentials` cùng file DB, Excel, JSON người dùng và `.env` không bị ghi đè. Mọi file được backup trước khi thay; nếu copy hoặc smoke-test thất bại, updater tự rollback và mở lại bản cũ. Nhật ký `update.log` nằm cạnh EXE (hoặc `%TEMP%\NetflixManager-update.log` nếu thư mục app không ghi được) và ghi current/latest version, API URL, asset, URL/path tải, lỗi, replace, rollback và restart.

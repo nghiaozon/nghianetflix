@@ -78,3 +78,22 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release upload v1.0.0 dist/update.json --clobber --repo "${{ github.repository }}"
+
+      # v1.0.0 reads update.json from main. release.ps1 creates that file from a
+      # local build, while this job rebuilds the official EXE, so only this
+      # manifest has the matching SHA-256. Publish it after the Release exists.
+      - name: Publish official manifest for legacy clients
+        shell: pwsh
+        run: |
+          Copy-Item dist/update.json "$env:RUNNER_TEMP/update.json"
+          git fetch origin main
+          git switch main
+          Copy-Item "$env:RUNNER_TEMP/update.json" update.json -Force
+          git diff --quiet -- update.json
+          if ($LASTEXITCODE -ne 0) {
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add update.json
+            git commit -m "Update legacy manifest for ${{ github.ref_name }}"
+            git push origin main
+          }
