@@ -57,19 +57,24 @@ class CopyableTableWidget(QTableWidget):
         self._delete_row_callback = delete_callback
 
     def ApplyDataGridViewTheme(self):
-        """Apply a complete, OS-independent dark theme to this table.
+        """Apply theme color scheme dynamically based on active theme."""
+        from app_styles import ThemeManager
+        theme = ThemeManager.get_active_theme()
 
-        QTableWidget has no WinForms RowTemplate.  Setting the viewport palette,
-        the item-view stylesheet and every existing item is the Qt equivalent:
-        newly-created/empty cells and rows can no longer fall back to Windows
-        highlight, base or alternate-base colours.
-        """
-        dark = QColor("#0e1928")
-        alternate = QColor("#111e2e")
-        selected = QColor("#1b477c")
-        foreground = QColor("#dce5ef")
-        header_background = QColor("#0a1421")
-        header_foreground = QColor("#aab8ca")
+        dark = QColor(theme.TABLE_BACKGROUND)
+        alternate = QColor(theme.INPUT_BACKGROUND)
+        foreground = QColor(theme.TEXT_PRIMARY)
+        header_background = QColor(theme.TABLE_HEADER)
+        header_foreground = QColor(theme.TEXT_SECONDARY)
+        
+        selected_color_str = theme.BUTTON_PRIMARY_HOVER
+        if "qlineargradient" in selected_color_str:
+            parts = selected_color_str.split("stop:")
+            if len(parts) > 1:
+                selected_color_str = parts[1].split()[1].strip()
+            else:
+                selected_color_str = "#1B477C"
+        selected = QColor(selected_color_str)
 
         palette = self.palette()
         for group in (QPalette.ColorGroup.Active,
@@ -81,7 +86,7 @@ class CopyableTableWidget(QTableWidget):
             palette.setColor(group, QPalette.ColorRole.Text, foreground)
             palette.setColor(group, QPalette.ColorRole.WindowText, foreground)
             palette.setColor(group, QPalette.ColorRole.Highlight, selected)
-            palette.setColor(group, QPalette.ColorRole.HighlightedText, foreground)
+            palette.setColor(group, QPalette.ColorRole.HighlightedText, QColor("#FFFFFF") if theme.BACKGROUND != "#F1F5F9" else QColor("#000000"))
         self.setPalette(palette)
         self.viewport().setPalette(palette)
         self.viewport().setAutoFillBackground(True)
@@ -111,7 +116,7 @@ class CopyableTableWidget(QTableWidget):
                     cell_widget.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
                     cell_widget.setStyleSheet(
                         f"QWidget#{cell_widget.objectName()} {{"
-                        f"background-color: {row_background.name()}; color: #dce5ef;}}"
+                        f"background-color: {row_background.name()}; color: {theme.TEXT_PRIMARY};}}"
                     )
 
         header_palette = self.horizontalHeader().palette()
@@ -235,13 +240,20 @@ class AccountDialog(QDialog):
         if self.is_edit:
             self.load_data()
 
+        self.setModal(True)
+        
+        self.init_ui()
+        if self.is_edit:
+            self.load_data()
+
     def init_ui(self):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(28, 24, 28, 24)
         layout.setSpacing(18)
         
         title_label = QLabel("THÔNG TIN TÀI KHOẢN")
-        title_label.setStyleSheet("font-size: 20px; font-weight: 700; color: #F8FAFC;")
+        title_label.setProperty("class", "DialogTitle")
+        title_label.setStyleSheet("font-size: 20px; font-weight: 700; margin-bottom: 8px;")
         title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(title_label)
         
@@ -391,7 +403,8 @@ class OrderDialog(QDialog):
         layout.setSpacing(18)
         
         title_label = QLabel("THÔNG TIN ĐƠN HÀNG")
-        title_label.setStyleSheet("font-size: 20px; font-weight: 700; color: #F8FAFC;")
+        title_label.setProperty("class", "DialogTitle")
+        title_label.setStyleSheet("font-size: 20px; font-weight: 700; margin-bottom: 8px;")
         title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(title_label)
         
@@ -593,7 +606,8 @@ class TrashBinDialog(QDialog):
         layout.setSpacing(14)
         
         title_label = QLabel("THÙNG RÁC - ĐÃ XÓA MỀM")
-        title_label.setStyleSheet("font-size:20px; font-weight:700; color:#FFFFFF; margin-bottom:8px;")
+        title_label.setProperty("class", "DialogTitle")
+        title_label.setStyleSheet("font-size: 20px; font-weight: 700; margin-bottom: 8px;")
         title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(title_label)
         
@@ -707,41 +721,13 @@ class TrashBinDialog(QDialog):
         # Nút Khôi phục
         restore_btn = QPushButton("↩ Khôi phục")
         restore_btn.setFixedSize(102, self.ACTION_BUTTON_HEIGHT)
-        restore_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #123B2B;
-                color: #86EFAC;
-                border: 1px solid #286548;
-                border-radius: 7px;
-                padding: 0;
-                font-size: 9px;
-                font-weight: 600;
-                min-height: 36px;
-                max-height: 36px;
-            }
-            QPushButton:hover { background-color: #185239; border-color: #48B77D; }
-            QPushButton:pressed { background-color: #0E3022; }
-        """)
+        restore_btn.setProperty("class", "RestoreButton")
         restore_btn.clicked.connect(lambda: self.on_restore(item_id))
         
         # Nút Xóa vĩnh viễn
         delete_btn = QPushButton("🗑 Xóa vĩnh viễn")
         delete_btn.setFixedSize(138, self.ACTION_BUTTON_HEIGHT)
-        delete_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #451F2A;
-                color: #FDA4AF;
-                border: 1px solid #783246;
-                border-radius: 7px;
-                padding: 0;
-                font-size: 9px;
-                font-weight: 600;
-                min-height: 36px;
-                max-height: 36px;
-            }
-            QPushButton:hover { background-color: #612536; border-color: #B94460; }
-            QPushButton:pressed { background-color: #351721; }
-        """)
+        delete_btn.setProperty("class", "DeletePermanentButton")
         delete_btn.clicked.connect(lambda: self.on_delete_permanent(item_id))
         
         layout.addWidget(restore_btn)

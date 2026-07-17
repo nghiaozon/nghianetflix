@@ -58,15 +58,62 @@ def resource_path(relative_path):
 
 
 def highlight_expired_status(item):
-    """Làm nổi bật ô trạng thái hết hạn trên nền tối của bảng."""
+    """Làm nổi bật ô trạng thái hết hạn theo theme."""
     if item is None:
         return
-    item.setBackground(QColor("#4a1519"))
-    item.setForeground(QColor("#ff6b6b"))
+    from app_styles import ThemeManager
+    theme = ThemeManager.get_active_theme()
+    item.setBackground(QColor(theme.BADGE_EXPIRED))
+    item.setForeground(QColor(theme.ERROR))
     font = item.font()
     font.setBold(True)
     item.setFont(font)
 
+
+class ThemeOptionCard(QFrame):
+    clicked = Signal(str)
+    
+    def __init__(self, theme_id, name, description, parent=None):
+        super().__init__(parent)
+        self.theme_id = theme_id
+        self.setObjectName("ThemeOptionCard")
+        self.setProperty("class", "ThemeOptionCard")
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(18, 16, 18, 16)
+        layout.setSpacing(6)
+        
+        self.lbl_name = QLabel(name)
+        self.lbl_name.setStyleSheet("font-weight: bold; font-size: 15px; color: inherit; background: transparent;")
+        
+        self.lbl_desc = QLabel(description)
+        self.lbl_desc.setStyleSheet("font-size: 12px; color: inherit; background: transparent;")
+        self.lbl_desc.setWordWrap(True)
+        
+        layout.addWidget(self.lbl_name)
+        layout.addWidget(self.lbl_desc)
+        layout.addStretch()
+        
+        self.selected = False
+        
+    def set_selected(self, selected):
+        self.selected = selected
+        self.setProperty("selected", "true" if selected else "false")
+        self.style().unpolish(self)
+        self.style().polish(self)
+        
+        # Cập nhật dấu chọn
+        clean_name = self.lbl_name.text().replace("●  ", "").replace("○  ", "")
+        if selected:
+            self.lbl_name.setText(f"●  {clean_name}")
+        else:
+            self.lbl_name.setText(f"○  {clean_name}")
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit(self.theme_id)
+        super().mousePressEvent(event)
 
 
 class MplCanvas(FigureCanvas):
@@ -93,15 +140,18 @@ class MplCanvas(FigureCanvas):
 
     def set_hover_data(self, days, revenue, orders, month_name):
         """Lưu dữ liệu dùng cho tooltip và tạo hộp tooltip trên trục chính."""
+        from app_styles import ThemeManager
+        theme = ThemeManager.get_active_theme()
+        
         self.chart_days = list(days)
         self.chart_revenue = list(revenue)
         self.chart_orders = list(orders)
         self.chart_month = month_name
         self.tooltip = self.axes.annotate(
             "", xy=(0, 0), xytext=(14, 14), textcoords="offset points",
-            color="#F5F7FA", fontsize=9, linespacing=1.55,
-            bbox=dict(boxstyle="round,pad=0.7", fc="#111827", ec="#4B5563", alpha=0.97),
-            arrowprops=dict(arrowstyle="->", color="#6B7280"),
+            color=theme.TEXT_PRIMARY, fontsize=9, linespacing=1.55,
+            bbox=dict(boxstyle="round,pad=0.7", fc=theme.INPUT_BACKGROUND, ec=theme.BORDER, alpha=0.97),
+            arrowprops=dict(arrowstyle="->", color=theme.BORDER),
             annotation_clip=False, zorder=20
         )
         self.tooltip.set_visible(False)
@@ -140,24 +190,40 @@ class MplCanvas(FigureCanvas):
         self.draw_idle()
 
     def style_axes(self):
-        """Cấu hình màu sắc của trục tọa độ khớp với Dark Mode."""
+        """Cấu hình màu sắc của trục tọa độ khớp với theme hiện tại."""
+        from app_styles import ThemeManager
+        theme = ThemeManager.get_active_theme()
+        
+        bg_color = theme.BACKGROUND
+        card_color = theme.CARD
+        text_color = theme.TEXT_PRIMARY
+        muted_color = theme.TEXT_SECONDARY
+        border_color = theme.BORDER
+        
+        # Thiết lập màu nền cho figure và axes
+        self.figure.set_facecolor(card_color)
+        self.axes.set_facecolor(bg_color)
+        
         for ax in [self.axes, self.axes_twin]:
-            ax.tick_params(colors='#AAB5C3', labelsize=9)
-            ax.yaxis.label.set_color('#DDDDDD')
-            ax.xaxis.label.set_color('#DDDDDD')
-            ax.title.set_color('#FFFFFF')
+            ax.tick_params(colors=muted_color, labelsize=9)
+            ax.yaxis.label.set_color(text_color)
+            ax.xaxis.label.set_color(text_color)
+            ax.title.set_color(text_color)
             for spine in ax.spines.values():
-                spine.set_color('#26384B')
+                spine.set_color(border_color)
                 
         # Trục hoành
         self.axes.set_xlabel("Ngày trong tháng", fontsize=10, labelpad=8)
-        self.axes.grid(True, color='#52657A', linestyle='--', linewidth=0.55, alpha=0.22)
+        self.axes.grid(True, color=border_color, linestyle='--', linewidth=0.55, alpha=0.3)
         self.axes.tick_params(axis='y', colors='#35D982')
         self.axes_twin.tick_params(axis='y', colors='#3399FF')
         self.axes_twin.yaxis.tick_right()
         self.axes_twin.yaxis.set_label_position('right')
         self.axes.spines['left'].set_color('#35D982')
         self.axes_twin.spines['right'].set_color('#3399FF')
+        
+        # Trục bên phải không đè nền xám của trục chính
+        self.axes_twin.set_facecolor('none')
 
 
 class MainWindow(QMainWindow):
@@ -1094,7 +1160,9 @@ class MainWindow(QMainWindow):
             amount_item = QTableWidgetItem(f"{so_tien:,.0f} ₫")
             amount_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             self.order_table.setItem(idx, 4, amount_item)
-            self.order_table.item(idx, 4).setForeground(Qt.GlobalColor.green) # Chữ xanh lá cho tiền bạc dễ nhìn
+            from app_styles import ThemeManager
+            theme = ThemeManager.get_active_theme()
+            self.order_table.item(idx, 4).setForeground(QColor(theme.SUCCESS)) # Chữ màu success theo theme cho tiền bạc dễ nhìn
             
             # Ghi chú
             note_item = QTableWidgetItem(row['ghi_chu'] or "—")
@@ -1289,7 +1357,8 @@ class MainWindow(QMainWindow):
         self.content_stack.addWidget(page)
 
     def setup_settings_tab(self):
-        """Trang thông tin giao diện; cố ý không ghi hay thay đổi cấu hình dữ liệu."""
+        """Thiết lập trang Cài đặt giao diện và cấu hình theme."""
+        from app_styles import ThemeManager
         page = QWidget()
         page.setObjectName("PageRoot")
         layout = QVBoxLayout(page)
@@ -1303,31 +1372,111 @@ class MainWindow(QMainWindow):
         layout.addWidget(title)
         layout.addWidget(subtitle)
 
+        # Card chứa 3 lựa chọn theme
         theme_card = QFrame()
-        theme_card.setObjectName("InfoCard")
-        card_layout = QVBoxLayout(theme_card)
-        card_layout.setContentsMargins(24, 22, 24, 22)
-        card_layout.setSpacing(10)
-        card_title = QLabel("✦  Dark Neon")
+        theme_card.setObjectName("ToolbarCard")
+        theme_card_layout = QVBoxLayout(theme_card)
+        theme_card_layout.setContentsMargins(24, 22, 24, 22)
+        theme_card_layout.setSpacing(16)
+
+        card_title = QLabel("Giao diện ứng dụng")
         card_title.setProperty("class", "SectionTitle")
-        card_desc = QLabel(
-            "Giao diện xanh tím hiện đại đang được áp dụng. Database, cấu hình Sheets "
-            "và toàn bộ luồng xử lý nghiệp vụ vẫn sử dụng nguyên trạng."
-        )
-        card_desc.setProperty("class", "PageSubtitle")
-        card_desc.setWordWrap(True)
-        safety = QLabel("✓  Dữ liệu được giữ nguyên     ✓  Callback hiện có được giữ nguyên")
-        safety.setStyleSheet(
-            "color:#69F59A; background:#10271E; border:1px solid #24523B; "
-            "border-radius:8px; padding:12px; font-weight:600;"
-        )
-        card_layout.addWidget(card_title)
-        card_layout.addWidget(card_desc)
-        card_layout.addSpacing(8)
-        card_layout.addWidget(safety)
+        theme_card_layout.addWidget(card_title)
+
+        # Hộp chứa 3 card option nằm cạnh nhau
+        options_layout = QHBoxLayout()
+        options_layout.setSpacing(15)
+
+        self.card_dark_neon = ThemeOptionCard("dark_neon", "Dark Neon", "Giao diện xanh tím hiện đại", self)
+        self.card_classic_dark = ThemeOptionCard("classic_dark", "Classic Dark", "Giao diện tối nguyên bản", self)
+        self.card_light = ThemeOptionCard("light", "Light", "Giao diện sáng trắng", self)
+
+        options_layout.addWidget(self.card_dark_neon, 1)
+        options_layout.addWidget(self.card_classic_dark, 1)
+        options_layout.addWidget(self.card_light, 1)
+        theme_card_layout.addLayout(options_layout)
+
+        # Connect signals
+        self.card_dark_neon.clicked.connect(self.select_theme_option)
+        self.card_classic_dark.clicked.connect(self.select_theme_option)
+        self.card_light.clicked.connect(self.select_theme_option)
+
+        # Chọn theme hiện tại
+        current_theme = ThemeManager.get_theme_name()
+        self.selected_theme_id = current_theme
+        self.select_theme_option(current_theme)
+
+        # Nút Áp dụng giao diện
+        btn_layout = QHBoxLayout()
+        self.btn_apply_theme = QPushButton("Áp dụng giao diện")
+        self.btn_apply_theme.setProperty("class", "PrimaryButton")
+        self.btn_apply_theme.setCursor(Qt.PointingHandCursor)
+        self.btn_apply_theme.setFixedWidth(200)
+        self.btn_apply_theme.clicked.connect(self.apply_selected_theme)
+        btn_layout.addWidget(self.btn_apply_theme)
+        btn_layout.addStretch()
+        theme_card_layout.addLayout(btn_layout)
+
         layout.addWidget(theme_card)
+
+        # Panel thông báo an toàn dữ liệu
+        safety_card = QFrame()
+        safety_card.setObjectName("InfoCard")
+        safety_layout = QVBoxLayout(safety_card)
+        safety_layout.setContentsMargins(24, 20, 24, 20)
+        safety_layout.setSpacing(10)
+
+        safety_title = QLabel("✦  Trạng thái bảo toàn dữ liệu")
+        safety_title.setProperty("class", "SectionTitle")
+        safety_layout.addWidget(safety_title)
+
+        safety_desc = QLabel(
+            "Việc thay đổi giao diện (theme) chỉ áp dụng màu sắc hình ảnh hiển thị ngoài frontend. "
+            "Toàn bộ dữ liệu tài khoản, dữ liệu đơn hàng, cấu trúc database SQLite, logic đồng bộ Google Sheets, "
+            "cũng như quy trình cập nhật tự động hoàn toàn được giữ nguyên trạng và bảo vệ tuyệt đối."
+        )
+        safety_desc.setProperty("class", "PageSubtitle")
+        safety_desc.setWordWrap(True)
+        safety_layout.addWidget(safety_desc)
+
+        safety_badge = QLabel("✓ Dữ liệu tài khoản & đơn hàng được bảo toàn tuyệt đối     ✓ Cấu trúc database được giữ nguyên")
+        safety_badge.setProperty("class", "SafetyLabel")
+        safety_layout.addWidget(safety_badge)
+
+        layout.addWidget(safety_card)
         layout.addStretch()
         self.content_stack.addWidget(page)
+
+    def select_theme_option(self, theme_id):
+        self.selected_theme_id = theme_id
+        self.card_dark_neon.set_selected(theme_id == "dark_neon")
+        self.card_classic_dark.set_selected(theme_id == "classic_dark")
+        self.card_light.set_selected(theme_id == "light")
+
+    def apply_selected_theme(self):
+        from app_styles import ThemeManager
+        theme_name = self.selected_theme_id
+        if ThemeManager.set_theme(theme_name):
+            # Cập nhật stylesheet toàn bộ ứng dụng ngay lập tức
+            QApplication.instance().setStyleSheet(ThemeManager.get_stylesheet())
+            
+            # Cập nhật lại màu sắc bảng biểu chính
+            self.acc_table.ApplyDataGridViewTheme()
+            self.order_table.ApplyDataGridViewTheme()
+            
+            # Tải lại dữ liệu bảng
+            self.refresh_accounts()
+            self.refresh_orders()
+            
+            # Tải lại biểu đồ
+            self.refresh_charts()
+            
+            # Hiện thông báo thành công
+            QMessageBox.information(
+                self, 
+                "Thành công", 
+                "Đã áp dụng giao diện mới thành công!"
+            )
     
     def setup_charts_tab(self):
         page = QWidget()
@@ -1478,7 +1627,6 @@ class MainWindow(QMainWindow):
             note_label.setStyleSheet(
                 'font-family:"Segoe UI"; font-size:12px; font-weight:400; color:#AEB9C7;'
             )
-
             card_layout.addWidget(title_label)
             card_layout.addWidget(value_label)
             card_layout.addWidget(note_label)
@@ -1625,12 +1773,14 @@ class MainWindow(QMainWindow):
         # Gom nhãn chú thích (Legend) chung từ cả 2 đường vẽ
         lines = line_rev + line_ord
         labels = [l.get_label() for l in lines]
+        from app_styles import ThemeManager
+        theme = ThemeManager.get_active_theme()
         legend = self.canvas.axes.legend(
             lines, labels, loc='upper center', bbox_to_anchor=(0.5, 1.10), ncol=2,
-            facecolor='#0D1926', edgecolor='#2B3C50'
+            facecolor=theme.BACKGROUND, edgecolor=theme.BORDER
         )
         for text in legend.get_texts():
-            text.set_color('#FFFFFF')
+            text.set_color(theme.TEXT_PRIMARY)
             
         # Co cấu khít bố cục
         # Chừa lề riêng cho hai nhãn trục Y, tránh chồng chữ khi cửa sổ co lại.
