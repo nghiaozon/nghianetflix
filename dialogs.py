@@ -240,12 +240,6 @@ class AccountDialog(QDialog):
         if self.is_edit:
             self.load_data()
 
-        self.setModal(True)
-        
-        self.init_ui()
-        if self.is_edit:
-            self.load_data()
-
     def init_ui(self):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(28, 24, 28, 24)

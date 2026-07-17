@@ -369,15 +369,21 @@ QPushButton.DeletePermanentButton:hover { background-color: {ERROR}; border-colo
 QFrame.ThemeOptionCard {
     background-color: {INPUT_BACKGROUND};
     border: 2px solid {BORDER};
-    border-radius: 10px;
+    border-radius: 12px;
+    margin: 4px;
+    padding: 10px;
 }
 QFrame.ThemeOptionCard:hover {
     background-color: {TABLE_ROW_HOVER};
     border-color: {BUTTON_PRIMARY_HOVER};
+    margin: 2px;
+    padding: 12px;
 }
 QFrame.ThemeOptionCard[selected="true"] {
     background-color: {TABLE_ROW_HOVER};
     border-color: {BUTTON_PRIMARY};
+    margin: 2px;
+    padding: 12px;
 }
 
 QLabel.SafetyLabel {
