@@ -79,6 +79,11 @@ Lệnh trên tự tăng phiên bản `patch`, build và smoke-test EXE, tính SH
 build lại gói chính thức rồi tự tạo GitHub Release cùng EXE và manifest. Nếu lỗi xảy ra trước khi
 commit, script tự khôi phục version và manifest ban đầu.
 
+Trước khi đổi version, script tự `fetch` và `rebase --autostash` lên `origin/<branch>` để lấy
+commit manifest do GitHub Actions tạo mà vẫn giữ các thay đổi source chưa commit. Script kiểm tra
+remote lần nữa sau build/test và trước push, vì vậy lần phát hành kế tiếp không bị lỗi
+`fetch first`/`non-fast-forward`. Không dùng `git push --force` để xử lý lỗi phát hành.
+
 Các tùy chọn thường dùng:
 
 ```powershell

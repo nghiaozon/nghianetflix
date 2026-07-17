@@ -52,6 +52,18 @@ function Invoke-Git([string[]]$Arguments) {
     if ($LASTEXITCODE -ne 0) { Fail "Git loi khi chay: git $($Arguments -join ' ')" }
 }
 
+$branch = (& $Git branch --show-current).Trim()
+if (-not $branch) { Fail "Khong xac dinh duoc nhanh Git hien tai." }
+
+# GitHub Actions writes the SHA-256 of the official CI-built EXE back to main.
+# Pull that bot commit before changing the version. --autostash preserves local
+# source edits that are intentionally included in the next release.
+if (-not $NoPush) {
+    Write-Step "Dong bo nhanh $branch voi GitHub truoc khi phat hanh"
+    Invoke-Git @("fetch", "origin", $branch)
+    Invoke-Git @("rebase", "--autostash", "origin/$branch")
+}
+
 $originalVersionContent = Get-Content -LiteralPath $VersionFile -Raw -Encoding UTF8
 $originalManifestContent = Get-Content -LiteralPath $ManifestFile -Raw -Encoding UTF8
 $sourceCommitted = $false
@@ -63,6 +75,8 @@ try {
     }
     if ($Version -notmatch '^\d+\.\d+\.\d+$') { Fail "Version phai co dang X.Y.Z (vi du 1.2.0)." }
     if ([version]$Version -le [version]$currentVersion) { Fail "Version moi ($Version) phai lon hon $currentVersion." }
+    & $Git rev-parse --verify --quiet "refs/tags/v$Version" | Out-Null
+    if ($LASTEXITCODE -eq 0) { Fail "Tag v$Version da ton tai." }
 
     Write-Step "Cap nhat version $currentVersion -> $Version"
     $versionContent = Get-Content -LiteralPath $VersionFile -Raw -Encoding UTF8
@@ -124,13 +138,15 @@ try {
     & $Git diff --cached --quiet
     if ($LASTEXITCODE -ne 0) { Invoke-Git @("commit", "-m", "Release v$Version") }
     $sourceCommitted = $true
-    $branch = (& $Git branch --show-current).Trim()
-    if (-not $branch) { Fail "Khong xac dinh duoc nhanh Git hien tai." }
+
+    # The remote may have changed while PyInstaller and tests were running.
+    # Rebase once more so a normal fast-forward push cannot be rejected.
+    Write-Step "Kiem tra lai nhanh $branch truoc khi push"
+    Invoke-Git @("fetch", "origin", $branch)
+    Invoke-Git @("rebase", "origin/$branch")
     Invoke-Git @("push", "origin", $branch)
 
     Write-Step "Tao va push tag v$Version"
-    & $Git rev-parse --verify --quiet "refs/tags/v$Version" | Out-Null
-    if ($LASTEXITCODE -eq 0) { Fail "Tag v$Version da ton tai." }
     Invoke-Git @("tag", "-a", "v$Version", "-m", "Netflix Manager v$Version")
     Invoke-Git @("push", "origin", "v$Version")
 
