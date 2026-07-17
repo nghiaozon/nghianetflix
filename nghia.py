@@ -22,6 +22,32 @@ import updater
 from app_version import APP_VERSION
 from dialogs import CopyableTableWidget
 
+
+STATUS_FILTER_MAP = {
+    "Tất cả": "all",
+    "Đang hoạt động": "active",
+    "Đã hết hạn": "expired",
+}
+
+ACCOUNT_DATABASE_FILTER_MAP = {
+    "all": "Tất cả",
+    "active": "Đang hoạt động",
+    "expired": "Đã hết hạn",
+}
+
+# Giữ nguyên API truy vấn hiện có: giá trị cũ "Đơn hàng mới nhất" chính là
+# nhánh lọc các đơn chưa hết hạn và sắp xếp đơn mới trước.
+ORDER_DATABASE_FILTER_MAP = {
+    "all": "Tất cả",
+    "active": "Đơn hàng mới nhất",
+    "expired": "Đã hết hạn",
+}
+
+
+def normalize_status_filter(display_value):
+    """Chuẩn hóa nhãn hiển thị của bộ lọc thành key nội bộ thống nhất."""
+    return STATUS_FILTER_MAP.get(display_value, "all")
+
 # Thiết lập matplotlib tương thích với PyQt/PySide
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
@@ -602,12 +628,8 @@ class MainWindow(QMainWindow):
         self.acc_filter_combo.setSizePolicy(
             QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed
         )
+        self.acc_filter_combo.activated.connect(self.on_account_status_filter_changed)
         top_bar_layout.addWidget(self.acc_filter_combo)
-        
-        # Nút áp dụng bộ lọc
-        btn_apply = QPushButton("✓  Áp dụng")
-        btn_apply.clicked.connect(lambda: self.refresh_accounts(reset_page=True))
-        top_bar_layout.addWidget(btn_apply)
         
         # Nút thêm mới tài khoản
         btn_add = QPushButton("＋  Thêm tài khoản")
@@ -713,7 +735,8 @@ class MainWindow(QMainWindow):
         """Truy vấn cơ sở dữ liệu và tải lại bảng danh sách tài khoản."""
         self.update_account_status_by_expire_date()
         search_query = self.acc_search_input.text().strip()
-        status_filter = self.acc_filter_combo.currentText()
+        status_key = normalize_status_filter(self.acc_filter_combo.currentText())
+        status_filter = ACCOUNT_DATABASE_FILTER_MAP[status_key]
 
         self.all_accounts = database.get_accounts(search_query, status_filter)
         if reset_page:
@@ -783,6 +806,10 @@ class MainWindow(QMainWindow):
         self.acc_page_button.setText(str(self.acc_current_page))
         self.acc_prev_button.setEnabled(self.acc_current_page > 1)
         self.acc_next_button.setEnabled(self.acc_current_page < total_pages)
+
+    def on_account_status_filter_changed(self, _index):
+        """Lọc tài khoản ngay khi người dùng chọn trạng thái và về trang đầu."""
+        self.refresh_accounts(reset_page=True)
 
     def change_account_page(self, direction):
         """Đổi trang hiển thị; không thay đổi truy vấn hay dữ liệu tài khoản."""
@@ -911,9 +938,6 @@ class MainWindow(QMainWindow):
 
         # Chuyển sang Tab Đơn Hàng
         self.switch_tab(1)
-
-        # Đảm bảo filter dropdown có danh sách nền tảng
-        self.populate_order_filter_dropdown()
 
         # Đặt bộ lọc tìm kiếm bằng email (ưu tiên) hoặc bằng ID dưới dạng DH-xxxx
         if email:
@@ -1048,16 +1072,13 @@ class MainWindow(QMainWindow):
         
         # Bộ lọc trạng thái đơn hàng
         self.order_filter_combo = QComboBox()
+        self.order_filter_combo.addItems(["Tất cả", "Đang hoạt động", "Đã hết hạn"])
         self.order_filter_combo.setMinimumWidth(140)
         self.order_filter_combo.setSizePolicy(
             QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed
         )
+        self.order_filter_combo.activated.connect(self.on_order_status_filter_changed)
         top_bar_layout.addWidget(self.order_filter_combo)
-        
-        # Nút áp dụng bộ lọc đơn hàng
-        btn_apply = QPushButton("✓  Áp dụng")
-        btn_apply.clicked.connect(self.refresh_orders)
-        top_bar_layout.addWidget(btn_apply)
         
         # Nút xóa bộ lọc (trả về danh sách tất cả đơn hàng)
         btn_clear_filter = QPushButton("Xóa bộ lọc")
@@ -1122,33 +1143,11 @@ class MainWindow(QMainWindow):
         
         self.content_stack.addWidget(page)
 
-    def populate_order_filter_dropdown(self):
-        """Thiết lập các lựa chọn lọc cố định theo trạng thái đơn hàng."""
-        current_text = self.order_filter_combo.currentText()
-        self.order_filter_combo.blockSignals(True)
-        self.order_filter_combo.clear()
-        self.order_filter_combo.addItems([
-            "Tất cả",
-            "Đơn hàng mới nhất",
-            "Đã hết hạn",
-        ])
-        
-        # Đặt lại giá trị cũ nếu khớp
-        idx = self.order_filter_combo.findText(current_text)
-        if idx >= 0:
-            self.order_filter_combo.setCurrentIndex(idx)
-        else:
-            self.order_filter_combo.setCurrentIndex(0)
-            
-        self.order_filter_combo.blockSignals(False)
-
     def refresh_orders(self, sort_asc=False):
         """Tải dữ liệu từ DB lên bảng danh sách đơn hàng."""
-        # Đảm bảo dropdown chỉ chứa các lựa chọn lọc theo trạng thái.
-        self.populate_order_filter_dropdown()
-        
         search_query = self.order_search_input.text().strip()
-        status_filter = self.order_filter_combo.currentText()
+        status_key = normalize_status_filter(self.order_filter_combo.currentText())
+        status_filter = ORDER_DATABASE_FILTER_MAP[status_key]
         
         self.current_orders = database.get_orders(search_query, status_filter)
         
@@ -1220,6 +1219,10 @@ class MainWindow(QMainWindow):
             status_item = self.order_table.item(row_index, 8)
             if status_item and status_item.text() == "Đã hết hạn":
                 highlight_expired_status(status_item)
+
+    def on_order_status_filter_changed(self, _index):
+        """Lọc đơn hàng ngay khi người dùng chọn trạng thái."""
+        self.refresh_orders()
 
     def create_action_buttons_for_order(self, order_data):
         """Tạo cụm nút icon Sửa/Xóa nhưng giữ nguyên callback nghiệp vụ."""

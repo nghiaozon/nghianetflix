@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import QDate, Qt, QStringListModel
 from PySide6.QtGui import QBrush, QColor, QPalette, QKeySequence
 from PySide6.QtWidgets import QApplication
+from datetime import date, timedelta
 import database
 
 
@@ -370,7 +371,8 @@ class AccountDialog(QDialog):
             )
             
         if success:
-            QMessageBox.information(self, "Thành Công", msg)
+            if self.is_edit:
+                QMessageBox.information(self, "Thành Công", msg)
             self.accept()
         else:
             QMessageBox.critical(self, "Thất Bại", msg)
@@ -390,6 +392,9 @@ class OrderDialog(QDialog):
         self.init_ui()
         if self.is_edit:
             self.load_data()
+        # Chỉ bắt đầu tự tính sau khi dữ liệu cũ đã được nạp đầy đủ. Nhờ đó,
+        # mở đơn hàng để sửa không làm thay đổi ngày hết hạn đã lưu.
+        self.purchase_date.dateChanged.connect(self.on_purchase_date_changed)
 
     def init_ui(self):
         layout = QVBoxLayout(self)
@@ -427,7 +432,7 @@ class OrderDialog(QDialog):
         self.platform_combo.setEditable(False)
         self.platform_combo.addItems(["Tiktok", "Zalo", "Facebook", "Khác..."])
         if not self.is_edit:
-            self.platform_combo.setCurrentText("Tiktok")
+            self.platform_combo.setCurrentText("Zalo")
         form_layout.addRow("Nền tảng (*):", self.platform_combo)
         
         # Tên khách hàng
@@ -452,7 +457,9 @@ class OrderDialog(QDialog):
         self.purchase_date = QDateEdit()
         self.purchase_date.setCalendarPopup(True)
         self.purchase_date.setDisplayFormat("dd/MM/yyyy")
-        self.purchase_date.setDate(QDate.currentDate())
+        today = date.today()
+        purchase_qdate = QDate(today.year, today.month, today.day)
+        self.purchase_date.setDate(purchase_qdate)
         form_layout.addRow("Ngày mua (*):", self.purchase_date)
             
         # Ngày hết hạn
@@ -460,7 +467,7 @@ class OrderDialog(QDialog):
         self.expiry_date.setCalendarPopup(True)
         self.expiry_date.setDisplayFormat("dd/MM/yyyy")
         if not self.is_edit:
-            self.expiry_date.setDate(QDate.currentDate().addDays(30))
+            self.expiry_date.setDate(self.calculate_expiry_date(purchase_qdate))
         form_layout.addRow("Ngày hết hạn (*):", self.expiry_date)
         
         # Ghi chú
@@ -488,6 +495,41 @@ class OrderDialog(QDialog):
         btn_layout.addWidget(self.cancel_btn)
         btn_layout.addWidget(self.save_btn)
         layout.addLayout(btn_layout)
+
+    @staticmethod
+    def calculate_expiry_date(purchase_qdate):
+        """Tính ngày hết hạn bằng phép cộng ngày thực tế, không xử lý chuỗi."""
+        if not purchase_qdate.isValid():
+            return QDate()
+        purchase_python_date = purchase_qdate.toPython()
+        expiry_python_date = purchase_python_date + timedelta(days=30)
+        return QDate(
+            expiry_python_date.year,
+            expiry_python_date.month,
+            expiry_python_date.day,
+        )
+
+    def on_purchase_date_changed(self, purchase_qdate):
+        """Tự tính lại hạn 30 ngày khi người dùng thay đổi ngày mua."""
+        calculated_expiry = self.calculate_expiry_date(purchase_qdate)
+        if calculated_expiry.isValid():
+            self.expiry_date.setDate(calculated_expiry)
+
+    def _validated_date(self, date_input, field_label):
+        """Đọc ngày theo đúng định dạng hiển thị và báo lỗi thân thiện."""
+        date_format = date_input.displayFormat()
+        entered_text = date_input.lineEdit().text().strip()
+        parsed_date = QDate.fromString(entered_text, date_format)
+        if (not date_input.hasAcceptableInput()
+                or not parsed_date.isValid()
+                or parsed_date.toString(date_format) != entered_text):
+            QMessageBox.warning(
+                self,
+                "Lỗi Ngày Tháng",
+                f"{field_label} không hợp lệ. Vui lòng nhập theo định dạng dd/MM/yyyy.",
+            )
+            return None
+        return parsed_date
 
     def load_data(self):
         """Đổ dữ liệu cũ vào các trường khi ở chế độ Edit."""
@@ -542,14 +584,29 @@ class OrderDialog(QDialog):
         platform = self.platform_combo.currentText().strip()
         customer = self.customer_input.text().strip()
         amount_str = self.amount_input.text().strip()
-        purchase_str = self.purchase_date.date().toString("yyyy-MM-dd")
-        expiry_str = self.expiry_date.date().toString("yyyy-MM-dd")
         notes = self.note_input.toPlainText().strip()
         
         # Nếu combo bị vô hiệu (không có tài khoản rảnh) hoặc email không hợp lệ
         if not self.email_combo.isEnabled() or not email or not platform or not amount_str:
             QMessageBox.warning(self, "Lỗi Nhập Liệu", "Vui lòng chọn Email tài khoản, Nền tảng và Số tiền!")
             return
+
+        purchase_qdate = self._validated_date(self.purchase_date, "Ngày mua")
+        if purchase_qdate is None:
+            return
+        expiry_qdate = self._validated_date(self.expiry_date, "Ngày hết hạn")
+        if expiry_qdate is None:
+            return
+        if expiry_qdate < purchase_qdate:
+            QMessageBox.warning(
+                self,
+                "Lỗi Ngày Tháng",
+                "Ngày hết hạn không được nhỏ hơn ngày mua!",
+            )
+            return
+
+        purchase_str = purchase_qdate.toString("yyyy-MM-dd")
+        expiry_str = expiry_qdate.toString("yyyy-MM-dd")
             
         try:
             # Làm sạch định dạng tiền trước khi parse (ví dụ xóa "đ", "VND", chấm, phẩy...)
@@ -570,7 +627,6 @@ class OrderDialog(QDialog):
             )
             
         if success:
-            QMessageBox.information(self, "Thành Công", msg)
             self.accept()
         else:
             QMessageBox.critical(self, "Thất Bại", msg)
