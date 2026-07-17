@@ -101,6 +101,23 @@ def log_exception(event: str, exc: BaseException) -> None:
     _log(event, f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}")
 
 
+def _independent_subprocess_environment() -> dict[str, str]:
+    """Return an environment safe for processes that outlive a one-file app.
+
+    PyInstaller 6.9+ assumes another invocation of the same executable is a
+    worker and may reuse the parent's _MEI directory.  An updater/restart must
+    be an independent instance because the old _MEI directory is deleted when
+    the old app exits.
+    """
+    environment = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.upper().startswith("_PYI_")
+    }
+    environment["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+    return environment
+
+
 def _log_runtime_paths() -> None:
     _log("Current EXE", current_executable())
     _log("Current Folder", app_dir().resolve())
@@ -542,6 +559,14 @@ $ErrorActionPreference = 'Stop'
 $tx = Get-Content -LiteralPath $TransactionPath -Raw -Encoding UTF8 | ConvertFrom-Json
 $applied = [System.Collections.Generic.List[object]]::new()
 
+# The helper outlives the old PyInstaller one-file process. Every app instance
+# started from here must unpack into a fresh _MEI directory; otherwise the old
+# bootloader removes files such as base_library.zip while the new app imports.
+$env:PYINSTALLER_RESET_ENVIRONMENT = '1'
+Get-ChildItem Env: | Where-Object { $_.Name -like '_PYI_*' } | ForEach-Object {
+    Remove-Item -LiteralPath "Env:$($_.Name)" -ErrorAction SilentlyContinue
+}
+
 function Write-UpdateLog([string]$Event, [string]$Detail = '') {
     $line = "$(Get-Date -Format 'yyyy-MM-ddTHH:mm:ss') | $Event"
     if ($Detail) { $line += ": $Detail" }
@@ -565,6 +590,7 @@ function Restore-Update {
 }
 
 try {
+    Write-UpdateLog 'PyInstaller environment' 'fresh _MEI forced'
     Write-UpdateLog 'Current EXE' $tx.executable
     Write-UpdateLog 'Current Folder' $tx.appRoot
     while (Get-Process -Id $tx.pid -ErrorAction SilentlyContinue) { Start-Sleep -Milliseconds 300 }
@@ -589,8 +615,12 @@ try {
 
     $test = Start-Process -FilePath $tx.executable -ArgumentList '--self-test-update' -WorkingDirectory $tx.appRoot -Wait -PassThru
     if ($test.ExitCode -ne 0) { throw "Self-test failed with exit code $($test.ExitCode)" }
-    Start-Process -FilePath $tx.executable -WorkingDirectory $tx.appRoot
-    Write-UpdateLog 'Restart OK' $tx.executable
+    if (-not $tx.skipRestart) {
+        Start-Process -FilePath $tx.executable -WorkingDirectory $tx.appRoot
+        Write-UpdateLog 'Restart OK' $tx.executable
+    } else {
+        Write-UpdateLog 'Restart SKIPPED' 'integration test'
+    }
     Remove-Item -LiteralPath $tx.backupRoot -Force -Recurse -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $tx.stagingRoot -Force -Recurse -ErrorAction SilentlyContinue
     exit 0
@@ -625,6 +655,7 @@ def install_and_restart(prepared: PreparedUpdate) -> None:
                 [str(prepared.executable)],
                 close_fds=True,
                 cwd=str(prepared.staging_dir),
+                env=_independent_subprocess_environment(),
             )
         except OSError as exc:
             _log("Installer start FAILED", exc)
@@ -649,6 +680,7 @@ def install_and_restart(prepared: PreparedUpdate) -> None:
         "stagingRoot": str(prepared.staging_dir.resolve()),
         "backupRoot": str(backup_root),
         "log": str(update_log_path()),
+        "skipRestart": False,
         "operations": operations,
     }
     transaction_path = prepared.staging_dir / "transaction.json"
@@ -675,6 +707,7 @@ def install_and_restart(prepared: PreparedUpdate) -> None:
             ),
             close_fds=True,
             cwd=str(prepared.staging_dir),
+            env=_independent_subprocess_environment(),
         )
     except OSError as exc:
         _log("Helper start FAILED", exc)

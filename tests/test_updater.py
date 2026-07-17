@@ -2,6 +2,7 @@ import hashlib
 import io
 import json
 import os
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -247,6 +248,11 @@ class UpdaterTests(unittest.TestCase):
         self.assertIn("Rollback OK", helper)
         self.assertIn("Replace OK", helper)
         self.assertIn("Restart OK", helper)
+        self.assertIn("PYINSTALLER_RESET_ENVIRONMENT = '1'", helper)
+        self.assertIn("_PYI_*", helper)
+        self.assertIn("fresh _MEI forced", helper)
+        reset_environment = helper.index("PYINSTALLER_RESET_ENVIRONMENT = '1'")
+        self.assertLess(reset_environment, helper.index("Start-Process"))
         self.assertNotIn("NetflixManager.exe", helper)
         with tempfile.TemporaryDirectory() as temp_dir:
             unicode_path = Path(temp_dir) / "Ứng dụng" / "Quản lý Netflix.exe"
@@ -298,9 +304,12 @@ class UpdaterTests(unittest.TestCase):
             )
             self.assertEqual(transaction["executable"], str(running_exe))
             self.assertEqual(transaction["appRoot"], str(app_root))
+            self.assertFalse(transaction["skipRestart"])
             self.assertEqual(transaction["operations"][0]["target"], running_exe.name)
             self.assertNotIn(str(app_root), (staging / "apply_update.ps1").read_text(encoding="utf-8-sig"))
             popen.assert_called_once()
+            environment = popen.call_args.kwargs["env"]
+            self.assertEqual(environment["PYINSTALLER_RESET_ENVIRONMENT"], "1")
 
     def test_installer_is_started_from_temp_without_overwriting_running_exe(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -318,6 +327,94 @@ class UpdaterTests(unittest.TestCase):
                 updater.install_and_restart(prepared)
             writable.assert_not_called()
             popen.assert_called_once()
+            environment = popen.call_args.kwargs["env"]
+            self.assertEqual(environment["PYINSTALLER_RESET_ENVIRONMENT"], "1")
+
+    def test_independent_environment_removes_inherited_pyinstaller_state(self):
+        inherited = {
+            "_PYI_APPLICATION_HOME_DIR": r"C:\Temp\_MEI-old",
+            "_PYI_ARCHIVE_FILE": r"C:\Old\NetflixManager.exe",
+            "PATH": r"C:\Windows",
+        }
+        with patch.dict(updater.os.environ, inherited, clear=True):
+            environment = updater._independent_subprocess_environment()
+        self.assertNotIn("_PYI_APPLICATION_HOME_DIR", environment)
+        self.assertNotIn("_PYI_ARCHIVE_FILE", environment)
+        self.assertEqual(environment["PATH"], r"C:\Windows")
+        self.assertEqual(environment["PYINSTALLER_RESET_ENVIRONMENT"], "1")
+
+    @unittest.skipUnless(
+        os.name == "nt" and os.getenv("NETFLIX_MANAGER_RUN_FROZEN_INTEGRATION") == "1",
+        "set NETFLIX_MANAGER_RUN_FROZEN_INTEGRATION=1 after building the EXE",
+    )
+    def test_built_onefile_restarts_with_fresh_mei_from_unicode_folder(self):
+        """Reproduce the stale _MEI restart that previously lost base_library.zip."""
+        built_executable = Path(__file__).parents[1] / "dist/NetflixManager.exe"
+        self.assertTrue(built_executable.is_file(), "Run build.ps1 before this test")
+        with tempfile.TemporaryDirectory(prefix="NetflixManager-frozen-test-") as temp_dir:
+            root = Path(temp_dir) / "Ứng dụng ở thư mục bất kỳ"
+            staging = Path(temp_dir) / "Tạm cập nhật"
+            root.mkdir()
+            staging.mkdir()
+            executable = root / "Tên ứng dụng tùy ý.exe"
+            shutil.copy2(built_executable, executable)
+            payload = staging / "payload"
+            payload.mkdir()
+            replacement = payload / "NetflixManager.exe"
+            shutil.copy2(built_executable, replacement)
+            helper = staging / "apply_update.ps1"
+            transaction = staging / "transaction.json"
+            log = root / "update.log"
+            helper.write_text(updater._powershell_update_helper(), encoding="utf-8-sig")
+            transaction.write_text(
+                json.dumps(
+                    {
+                        "pid": 2147483647,
+                        "appRoot": str(root),
+                        "executable": str(executable),
+                        "stagingRoot": str(staging),
+                        "backupRoot": str(root / ".backup-test"),
+                        "log": str(log),
+                        "skipRestart": True,
+                        "operations": [
+                            {
+                                "source": str(replacement),
+                                "target": executable.name,
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8-sig",
+            )
+            poisoned_environment = dict(os.environ)
+            poisoned_environment["_PYI_ARCHIVE_FILE"] = str(executable)
+            poisoned_environment["_PYI_APPLICATION_HOME_DIR"] = str(
+                Path(temp_dir) / "_MEI-already-deleted"
+            )
+            poisoned_environment.pop("PYINSTALLER_RESET_ENVIRONMENT", None)
+            result = subprocess.run(
+                [
+                    "powershell.exe",
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-File",
+                    str(helper),
+                    str(transaction),
+                ],
+                env=poisoned_environment,
+                capture_output=True,
+                text=True,
+                timeout=120,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            update_log = log.read_text(encoding="utf-8-sig")
+            self.assertIn("Replace OK: 1 file(s)", update_log)
+            self.assertIn("Restart SKIPPED", update_log)
+            self.assertNotIn("Update FAILED", update_log)
 
 
 if __name__ == "__main__":

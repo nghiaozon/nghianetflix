@@ -1,12 +1,12 @@
 {
-  "version": "1.0.8",
-  "download_url": "https://github.com/nghiaozon/nghianetflix/releases/download/v1.0.8/NetflixManager.exe",
-  "changelog": "Xem ghi chú phát hành trên GitHub.",
+  "version": "1.0.9",
+  "download_url": "https://github.com/nghiaozon/nghianetflix/releases/download/v1.0.9/NetflixManager.exe",
+  "changelog": "Sửa lỗi môi trường PyInstaller khi tự cập nhật và khởi động lại ứng dụng.",
   "package_type": "exe",
   "package_name": "NetflixManager.exe",
   "file_name": "NetflixManager.exe",
   "executable_name": "NetflixManager.exe",
-  "sha256": "72156157f9521770933b7827346df86f3df7d1702d2200082f1a7f97997c14f8",
+  "sha256": "d0f232beaac74ad019e289c5223149948f545ba88c1b223f5535a42b92d2167f",
   "require_authenticode": false,
   "publisher": ""
 }

@@ -137,3 +137,13 @@ hiển thị lỗi đầy đủ. Trước khi tải/cài, ứng dụng thử quy
 hướng dẫn người dùng di chuyển ứng dụng hoặc dùng quyền phù hợp nếu thư mục bị khóa.
 
 Updater luôn xác định EXE và thư mục ứng dụng từ runtime, không lưu đường dẫn vào config. Với gói EXE, app thay đúng file EXE đang chạy, kể cả khi người dùng đã đổi tên file. Với gói ZIP, app thay toàn bộ file chương trình có trong gói. Các thư mục `data`, `config`, `excel`, `database`, `credentials` cùng file DB, Excel, JSON người dùng và `.env` không bị ghi đè. Mọi file được backup trước khi thay; nếu copy hoặc smoke-test thất bại, updater tự rollback và mở lại bản cũ. Nhật ký `update.log` nằm cạnh EXE (hoặc `%TEMP%\NetflixManager-update.log` nếu thư mục app không ghi được) và ghi current/latest version, API URL, asset, URL/path tải, lỗi, replace, rollback và restart.
+
+Vì đây là PyInstaller one-file, mọi lần smoke-test, restart và rollback đều phải chạy với
+`PYINSTALLER_RESET_ENVIRONMENT=1` và không kế thừa biến `_PYI_*`. Nếu thiếu bước này, tiến trình
+mới có thể dùng lại thư mục `_MEI` của tiến trình cũ rồi lỗi thiếu `base_library.zip` khi thư mục
+cũ bị dọn. Sau khi build, có thể chạy regression test thực tế trong thư mục Unicode/tên EXE tùy ý:
+
+```powershell
+$env:NETFLIX_MANAGER_RUN_FROZEN_INTEGRATION = "1"
+.\.venv\Scripts\python.exe -m unittest tests.test_updater.UpdaterTests.test_built_onefile_restarts_with_fresh_mei_from_unicode_folder -v
+```
