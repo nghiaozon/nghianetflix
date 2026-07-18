@@ -27,12 +27,12 @@ class StatusFilterTests(unittest.TestCase):
 
         window.refresh_accounts.assert_called_once_with(reset_page=True)
 
-    def test_order_selection_refreshes_once(self):
+    def test_order_selection_refreshes_once_and_resets_pagination(self):
         window = Mock()
 
         MainWindow.on_order_status_filter_changed(window, 2)
 
-        window.refresh_orders.assert_called_once_with()
+        window.refresh_orders.assert_called_once_with(reset_page=True)
 
     def test_account_search_and_status_are_sent_in_the_same_query(self):
         window = Mock()

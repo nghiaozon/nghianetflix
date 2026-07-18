@@ -216,6 +216,29 @@ def delete_account_soft(acc_id):
     finally:
         conn.close()
 
+
+def delete_accounts_soft_bulk(account_ids):
+    """Move multiple accounts to trash in one transaction."""
+    account_ids = sorted(set(account_ids))
+    if not account_ids:
+        return True
+    conn = get_connection()
+    cursor = conn.cursor()
+    try:
+        placeholders = ",".join("?" for _ in account_ids)
+        cursor.execute(
+            f"UPDATE tai_khoan SET trang_thai = 'Đã xóa' WHERE id IN ({placeholders})",
+            account_ids,
+        )
+        conn.commit()
+        return True
+    except Exception as exc:
+        conn.rollback()
+        print(f"Bulk account delete failed: {exc}")
+        return False
+    finally:
+        conn.close()
+
 def delete_account_permanently(acc_id):
     """Xóa vĩnh viễn tài khoản khỏi cơ sở dữ liệu."""
     conn = get_connection()
@@ -256,7 +279,13 @@ def restore_account(acc_id):
         conn.close()
 
 def get_accounts(search_query="", filter_status="Tất cả"):
-    """Lấy danh sách tài khoản theo bộ lọc tìm kiếm và trạng thái."""
+    """Lấy tài khoản đã lọc, sắp xếp theo ngày hết hạn tăng dần.
+
+    Ngày được lưu ở dạng ISO ``YYYY-MM-DD`` nên ``DATE()`` của SQLite sắp
+    xếp theo giá trị ngày, không theo chuỗi hiển thị ``dd/MM/yyyy``. Phép
+    chuẩn hóa ``+0 days`` còn phát hiện ngày không có thật (ví dụ 30/02);
+    mọi giá trị trống hoặc sai đều nằm cuối.
+    """
     conn = get_connection()
     cursor = conn.cursor()
     
@@ -271,9 +300,10 @@ def get_accounts(search_query="", filter_status="Tất cả"):
         query += " AND trang_thai = ?"
         params.append(filter_status)
         
-    # Đẩy tài khoản đã hết hạn lên đầu, các tài khoản vừa hết hạn gần đây sẽ đứng trước
-    query += " ORDER BY CASE WHEN trang_thai = 'Đã hết hạn' THEN 0 ELSE 1 END, "
-    query += "CASE WHEN trang_thai = 'Đã hết hạn' THEN DATE(ngay_het_han) END DESC, id DESC"
+    query += " ORDER BY CASE "
+    query += "WHEN DATE(ngay_het_han, '+0 days') IS NULL "
+    query += "OR DATE(ngay_het_han, '+0 days') != TRIM(ngay_het_han) THEN 1 ELSE 0 END, "
+    query += "DATE(ngay_het_han, '+0 days') ASC, id ASC"
     
     cursor.execute(query, params)
     rows = cursor.fetchall()
@@ -477,6 +507,47 @@ def delete_order_soft(order_id):
     finally:
         conn.close()
 
+
+def delete_orders_soft_bulk(order_ids):
+    """Move orders to trash and release linked accounts in one transaction."""
+    order_ids = sorted(set(order_ids))
+    if not order_ids:
+        return True
+    conn = get_connection()
+    cursor = conn.cursor()
+    try:
+        placeholders = ",".join("?" for _ in order_ids)
+        cursor.execute(
+            f"SELECT id, email_tai_khoan FROM don_hang "
+            f"WHERE da_xoa = 0 AND id IN ({placeholders})",
+            order_ids,
+        )
+        linked_accounts = cursor.fetchall()
+        cursor.execute(
+            f"UPDATE don_hang SET da_xoa = 1 WHERE id IN ({placeholders})",
+            order_ids,
+        )
+        for row in linked_accounts:
+            email = row['email_tai_khoan']
+            if email:
+                order_code = f"DH-{row['id']:04d}"
+                cursor.execute(
+                    """
+                    UPDATE tai_khoan
+                    SET ma_don_hang = NULL, trang_thai = 'Đang hoạt động'
+                    WHERE email = ? AND ma_don_hang = ?
+                    """,
+                    (email, order_code),
+                )
+        conn.commit()
+        return True
+    except Exception as exc:
+        conn.rollback()
+        print(f"Bulk order delete failed: {exc}")
+        return False
+    finally:
+        conn.close()
+
 def delete_order_permanently(order_id):
     """Xóa vĩnh viễn đơn hàng khỏi cơ sở dữ liệu."""
     conn = get_connection()
@@ -528,7 +599,11 @@ def restore_order(order_id):
         conn.close()
 
 def get_orders(search_query="", status_filter="Tất cả"):
-    """Lấy đơn hàng chưa xóa theo tìm kiếm và trạng thái hết hạn."""
+    """Lấy đơn hàng đã lọc, sắp xếp theo ngày hết hạn tăng dần.
+
+    Mọi nhánh lọc dùng giá trị ngày ISO qua ``DATE()``; ngày trống/sai định
+    dạng được đưa xuống cuối ở nhánh có thể chứa chúng.
+    """
     conn = get_connection()
     cursor = conn.cursor()
     
@@ -547,16 +622,13 @@ def get_orders(search_query="", status_filter="Tất cả"):
         
     if status_filter == "Đơn hàng mới nhất":
         query += " AND DATE(ngay_het_han) >= DATE('now', 'localtime')"
-        query += " ORDER BY DATE(ngay_mua) DESC, DATETIME(ngay_tao) DESC, id DESC"
     elif status_filter == "Đã hết hạn":
         query += " AND DATE(ngay_het_han) < DATE('now', 'localtime')"
-        query += " ORDER BY DATE(ngay_het_han) DESC, id DESC"
-    else:
-        # Ở chế độ Tất cả, ưu tiên đơn đã hết hạn giống bảng Tài khoản.
-        # Đơn vừa hết hạn gần nhất đứng trước, sau đó mới đến các đơn còn hạn.
-        query += " ORDER BY CASE WHEN DATE(ngay_het_han) < DATE('now', 'localtime') THEN 0 ELSE 1 END, "
-        query += "CASE WHEN DATE(ngay_het_han) < DATE('now', 'localtime') THEN DATE(ngay_het_han) END DESC, "
-        query += "DATE(ngay_mua) DESC, DATETIME(ngay_tao) DESC, id DESC"
+
+    query += " ORDER BY CASE "
+    query += "WHEN DATE(ngay_het_han, '+0 days') IS NULL "
+    query += "OR DATE(ngay_het_han, '+0 days') != TRIM(ngay_het_han) THEN 1 ELSE 0 END, "
+    query += "DATE(ngay_het_han, '+0 days') ASC, id ASC"
     
     cursor.execute(query, params)
     rows = cursor.fetchall()

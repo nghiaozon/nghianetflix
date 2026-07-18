@@ -4,13 +4,32 @@ from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QTextEdit,
     QDateEdit, QPushButton, QComboBox, QTableWidget, QTableWidgetItem,
     QHeaderView, QMessageBox, QFormLayout, QWidget, QAbstractItemView, QMenu,
-    QCompleter
+    QCompleter, QStyledItemDelegate, QStyle, QStyleOptionViewItem
 )
-from PySide6.QtCore import QDate, Qt, QStringListModel
+from PySide6.QtCore import QDate, QEvent, Qt, QStringListModel
 from PySide6.QtGui import QBrush, QColor, QPalette, QKeySequence
 from PySide6.QtWidgets import QApplication
 from datetime import date, timedelta
 import database
+
+
+class PersistentRowSelectionDelegate(QStyledItemDelegate):
+    """Paint business-selected rows above hover without changing input behavior."""
+
+    def paint(self, painter, option, index):
+        table = self.parent()
+        if table is not None and index.row() in table._persistent_selected_rows:
+            selected_option = QStyleOptionViewItem(option)
+            selected_option.state &= ~QStyle.StateFlag.State_MouseOver
+            selected_option.state |= QStyle.StateFlag.State_Selected
+            super().paint(painter, selected_option, index)
+            return
+        if table is not None and index.row() == table._hovered_row:
+            hover_option = QStyleOptionViewItem(option)
+            hover_option.state |= QStyle.StateFlag.State_MouseOver
+            super().paint(painter, hover_option, index)
+            return
+        super().paint(painter, option, index)
 
 
 class AutocompleteLineEdit(QLineEdit):
@@ -47,15 +66,134 @@ class CopyableTableWidget(QTableWidget):
         super().__init__(parent)
         self._edit_row_callback = None
         self._delete_row_callback = None
+        self._toggle_stt_selection_callback = None
+        self._ensure_stt_selection_callback = None
+        self._delete_selected_callback = None
+        self._selected_count_callback = None
+        self._clear_business_selection_callback = None
+        self._begin_stt_drag_callback = None
+        self._update_stt_drag_callback = None
+        self._end_stt_drag_callback = None
+        self._persistent_selected_rows = set()
+        self._hovered_row = None
+        self._stt_drag_active = False
+        self._stt_drag_moved = False
+        self._stt_drag_start_row = None
+        self._stt_drag_current_row = None
+        self._stt_drag_modifiers = Qt.KeyboardModifier.NoModifier
         self.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectItems)
         self.setMouseTracking(True)
+        self.setItemDelegate(PersistentRowSelectionDelegate(self))
         self.ApplyDataGridViewTheme()
 
     def set_row_action_callbacks(self, edit_callback=None, delete_callback=None):
         """Gắn hành động sửa/xóa cho menu chuột phải của từng bảng."""
         self._edit_row_callback = edit_callback
         self._delete_row_callback = delete_callback
+
+    def set_stt_selection_callbacks(
+        self,
+        toggle_callback=None,
+        ensure_callback=None,
+        delete_selected_callback=None,
+        selected_count_callback=None,
+        clear_selection_callback=None,
+        begin_drag_callback=None,
+        update_drag_callback=None,
+        end_drag_callback=None,
+    ):
+        """Configure multi-row selection, restricted to the STT column only."""
+        self._toggle_stt_selection_callback = toggle_callback
+        self._ensure_stt_selection_callback = ensure_callback
+        self._delete_selected_callback = delete_selected_callback
+        self._selected_count_callback = selected_count_callback
+        self._clear_business_selection_callback = clear_selection_callback
+        self._begin_stt_drag_callback = begin_drag_callback
+        self._update_stt_drag_callback = update_drag_callback
+        self._end_stt_drag_callback = end_drag_callback
+
+    def set_persistent_selected_rows(self, rows):
+        """Highlight complete rows without disabling or covering cell widgets."""
+        self._persistent_selected_rows = set(rows)
+        self.ApplyDataGridViewTheme()
+
+    def clear_transient_state(self):
+        """Clear native focus/hover state without invoking business callbacks."""
+        self.clearSelection()
+        self.setCurrentItem(None)
+        self._set_hovered_row(None)
+
+    def setCellWidget(self, row, column, widget):
+        """Track widget-backed cells so their row background follows hover/selected."""
+        super().setCellWidget(row, column, widget)
+        if widget is not None:
+            widget.setProperty("copyable_table_row", row)
+            widget.setProperty("copyable_table_column", column)
+            widget.setMouseTracking(True)
+            widget.installEventFilter(self)
+
+    def eventFilter(self, watched, event):
+        row = watched.property("copyable_table_row") if isinstance(watched, QWidget) else None
+        if row is not None:
+            column = watched.property("copyable_table_column")
+            if event.type() == QEvent.Type.Enter:
+                self._set_hovered_row(int(row))
+            elif event.type() == QEvent.Type.Leave and self._hovered_row == int(row):
+                self._set_hovered_row(None)
+            elif (
+                event.type() == QEvent.Type.MouseButtonPress
+                and event.button() == Qt.MouseButton.LeftButton
+                and column is not None
+                and int(column) != 0
+                and self._clear_business_selection_callback is not None
+            ):
+                self._clear_business_selection_callback()
+                self.clearSelection()
+                self.setCurrentCell(int(row), int(column))
+        return super().eventFilter(watched, event)
+
+    def _set_hovered_row(self, row):
+        if row == self._hovered_row:
+            return
+        self._hovered_row = row
+        self.viewport().update()
+        self._update_cell_widget_styles()
+
+    def _update_cell_widget_styles(self):
+        from app_styles import ThemeManager
+        theme = ThemeManager.get_active_theme()
+        for row in range(self.rowCount()):
+            if row in self._persistent_selected_rows:
+                background_css = theme.BUTTON_PRIMARY
+                border = theme.BORDER
+            elif row == self._hovered_row:
+                background_css = theme.TABLE_ROW_HOVER
+                border = None
+            else:
+                background_css = theme.INPUT_BACKGROUND if row % 2 else theme.TABLE_BACKGROUND
+                border = None
+            for column in range(self.columnCount()):
+                cell_widget = self.cellWidget(row, column)
+                if cell_widget is not None:
+                    if not cell_widget.objectName():
+                        cell_widget.setObjectName("DataGridCellWidget")
+                    cell_widget.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+                    cell_widget.setStyleSheet(
+                        f"QWidget#{cell_widget.objectName()} {{"
+                        f"background: {background_css}; color: {theme.TEXT_PRIMARY};"
+                        f"border-top: {'1px solid ' + border if border else 'none'};"
+                        f"border-bottom: {'1px solid ' + border if border else 'none'};}}"
+                    )
+
+    @staticmethod
+    def _selected_background_color(theme):
+        selected_color_str = theme.BUTTON_PRIMARY_HOVER
+        if "qlineargradient" in selected_color_str:
+            import re
+            gradient_colors = re.findall(r"#[0-9a-fA-F]{6}", selected_color_str)
+            selected_color_str = gradient_colors[len(gradient_colors) // 2] if gradient_colors else "#6150F1"
+        return QColor(selected_color_str)
 
     def ApplyDataGridViewTheme(self):
         """Apply theme color scheme dynamically based on active theme."""
@@ -68,14 +206,7 @@ class CopyableTableWidget(QTableWidget):
         header_background = QColor(theme.TABLE_HEADER)
         header_foreground = QColor(theme.TEXT_SECONDARY)
         
-        selected_color_str = theme.BUTTON_PRIMARY_HOVER
-        if "qlineargradient" in selected_color_str:
-            parts = selected_color_str.split("stop:")
-            if len(parts) > 1:
-                selected_color_str = parts[1].split()[1].strip()
-            else:
-                selected_color_str = "#1B477C"
-        selected = QColor(selected_color_str)
+        selected = self._selected_background_color(theme)
 
         palette = self.palette()
         for group in (QPalette.ColorGroup.Active,
@@ -100,7 +231,8 @@ class CopyableTableWidget(QTableWidget):
         # Explicitly colour all current cells (including cells underneath custom
         # button/badge widgets). Preserve deliberately coloured status text.
         for row in range(self.rowCount()):
-            row_background = alternate if row % 2 else dark
+            is_persistently_selected = row in self._persistent_selected_rows
+            row_background = selected if is_persistently_selected else (alternate if row % 2 else dark)
             for column in range(self.columnCount()):
                 item = self.item(row, column)
                 if item is None:
@@ -110,15 +242,7 @@ class CopyableTableWidget(QTableWidget):
                 if item.foreground().style() == Qt.BrushStyle.NoBrush:
                     item.setForeground(QBrush(foreground))
 
-                cell_widget = self.cellWidget(row, column)
-                if cell_widget is not None:
-                    if not cell_widget.objectName():
-                        cell_widget.setObjectName("DataGridCellWidget")
-                    cell_widget.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-                    cell_widget.setStyleSheet(
-                        f"QWidget#{cell_widget.objectName()} {{"
-                        f"background-color: {row_background.name()}; color: {theme.TEXT_PRIMARY};}}"
-                    )
+        self._update_cell_widget_styles()
 
         header_palette = self.horizontalHeader().palette()
         header_palette.setColor(QPalette.ColorRole.Button, header_background)
@@ -130,11 +254,125 @@ class CopyableTableWidget(QTableWidget):
 
     def keyPressEvent(self, event):
         """Xử lý phím Ctrl+C để copy dữ liệu bảng."""
-        if event.matches(QKeySequence.StandardKey.Copy):
+        if event.key() == Qt.Key.Key_Escape and self._clear_business_selection_callback is not None:
+            self._clear_business_selection_callback()
+            self.clearSelection()
+            self.setCurrentItem(None)
+            event.accept()
+        elif event.matches(QKeySequence.StandardKey.Copy):
             self.copy_to_clipboard()
             event.accept()
         else:
             super().keyPressEvent(event)
+
+    def mousePressEvent(self, event):
+        """Only a direct left click in column 0 may toggle a business row selection."""
+        index = self.indexAt(event.position().toPoint())
+        if (
+            event.button() == Qt.MouseButton.LeftButton
+            and index.isValid()
+            and index.column() == 0
+            and self._toggle_stt_selection_callback is not None
+        ):
+            # Row mode and native cell mode are mutually exclusive. Remove the
+            # focused/selected data cell before applying the STT row selection.
+            self.clearSelection()
+            self.setCurrentItem(None)
+            self._stt_drag_active = True
+            self._stt_drag_moved = False
+            self._stt_drag_start_row = index.row()
+            self._stt_drag_current_row = index.row()
+            self._stt_drag_modifiers = event.modifiers()
+            if self._begin_stt_drag_callback is not None:
+                self._begin_stt_drag_callback(index.row(), event.modifiers())
+            event.accept()
+            return
+        if (
+            event.button() == Qt.MouseButton.LeftButton
+            and index.isValid()
+            and index.column() != 0
+            and self._clear_business_selection_callback is not None
+        ):
+            # Let QTableWidget select/focus the clicked data cell only after the
+            # business row IDs and persistent row highlight have been cleared.
+            self._clear_business_selection_callback()
+            self.clearSelection()
+            self.setCurrentItem(None)
+            super().mousePressEvent(event)
+            return
+        if (
+            event.button() == Qt.MouseButton.LeftButton
+            and not index.isValid()
+            and self._clear_business_selection_callback is not None
+        ):
+            self._clear_business_selection_callback()
+            self.clearSelection()
+            self.setCurrentItem(None)
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        index = self.indexAt(event.position().toPoint())
+        if self._stt_drag_active and event.buttons() & Qt.MouseButton.LeftButton:
+            current_row = index.row() if index.isValid() else self._drag_edge_row(event.position().toPoint().y())
+            if current_row is not None:
+                self._set_hovered_row(current_row)
+                if current_row != self._stt_drag_current_row:
+                    self._stt_drag_moved = True
+                    self._stt_drag_current_row = current_row
+                    if self._update_stt_drag_callback is not None:
+                        self._update_stt_drag_callback(
+                            self._stt_drag_start_row,
+                            current_row,
+                            self._stt_drag_modifiers,
+                        )
+            event.accept()
+            return
+        self._set_hovered_row(index.row() if index.isValid() else None)
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton and self._stt_drag_active:
+            start_row = self._stt_drag_start_row
+            current_row = self._stt_drag_current_row
+            modifiers = self._stt_drag_modifiers
+            moved = self._stt_drag_moved
+            self._reset_stt_drag_state()
+            if moved:
+                if self._end_stt_drag_callback is not None:
+                    self._end_stt_drag_callback(start_row, current_row, modifiers)
+            else:
+                self._toggle_stt_selection_callback(start_row, modifiers)
+                if self._end_stt_drag_callback is not None:
+                    self._end_stt_drag_callback(start_row, start_row, modifiers)
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+    def _drag_edge_row(self, y_position):
+        if self.rowCount() == 0:
+            return None
+        if y_position < 0:
+            return 0
+        if y_position >= self.viewport().height():
+            return self.rowCount() - 1
+        return None
+
+    def _reset_stt_drag_state(self):
+        self._stt_drag_active = False
+        self._stt_drag_moved = False
+        self._stt_drag_start_row = None
+        self._stt_drag_current_row = None
+        self._stt_drag_modifiers = Qt.KeyboardModifier.NoModifier
+
+    def leaveEvent(self, event):
+        self._set_hovered_row(None)
+        super().leaveEvent(event)
+
+    def _exec_context_menu(self, menu, event):
+        """Open a native menu; kept separate so offscreen interaction tests do not block."""
+        return menu.exec(event.globalPos())
 
     def contextMenuEvent(self, event):
         """Hiện menu copy tại đúng ô được bấm chuột phải."""
@@ -144,9 +382,24 @@ class CopyableTableWidget(QTableWidget):
 
         clicked_row = item.row()
         clicked_column = item.column()
+
+        if clicked_column == 0 and self._ensure_stt_selection_callback is not None:
+            self.clearSelection()
+            self.setCurrentItem(None)
+            self._ensure_stt_selection_callback(clicked_row)
+            menu = QMenu(self)
+            count = self._selected_count_callback() if self._selected_count_callback else 0
+            delete_selected_action = menu.addAction(f"Xóa {count} mục đã chọn")
+            delete_selected_action.setEnabled(count > 0 and self._delete_selected_callback is not None)
+            selected_action = self._exec_context_menu(menu, event)
+            if selected_action == delete_selected_action and self._delete_selected_callback is not None:
+                self._delete_selected_callback()
+            return
+
+        if self._clear_business_selection_callback is not None:
+            self._clear_business_selection_callback()
         self.clearSelection()
         self.setCurrentCell(clicked_row, clicked_column)
-        self.selectRow(clicked_row)
 
         menu = QMenu(self)
         edit_action = menu.addAction("Chỉnh sửa")
@@ -156,7 +409,7 @@ class CopyableTableWidget(QTableWidget):
         menu.addSeparator()
         copy_cell_action = menu.addAction("Copy ô này")
         copy_row_action = menu.addAction("Copy cả dòng")
-        selected_action = menu.exec(event.globalPos())
+        selected_action = self._exec_context_menu(menu, event)
 
         if selected_action == edit_action and self._edit_row_callback is not None:
             self._edit_row_callback(clicked_row)
@@ -447,12 +700,6 @@ class OrderDialog(QDialog):
         self.amount_input.set_suggestions(database.get_order_amount_suggestions())
         form_layout.addRow("Số tiền (VND) (*):", self.amount_input)
         
-        # Số lần thông báo (Chỉ hiển thị khi Sửa)
-        if self.is_edit:
-            self.notify_count_combo = QComboBox()
-            self.notify_count_combo.addItems([str(i) for i in range(11)])
-            form_layout.addRow("Số lần thông báo:", self.notify_count_combo)
-
         # Ngày mua (ngày tạo đơn/ngày khách mua)
         self.purchase_date = QDateEdit()
         self.purchase_date.setCalendarPopup(True)
@@ -574,10 +821,6 @@ class OrderDialog(QDialog):
                 
         self.note_input.setPlainText(self.order_data.get('ghi_chu', ''))
         
-        if hasattr(self, 'notify_count_combo'):
-            count = str(self.order_data.get('so_lan_thong_bao', 0))
-            self.notify_count_combo.setCurrentText(count)
-
     def save_data(self):
         """Lưu dữ liệu đơn hàng và cập nhật database."""
         email = self.email_combo.currentText().strip()
@@ -617,7 +860,9 @@ class OrderDialog(QDialog):
             return
             
         if self.is_edit:
-            notify_count = int(self.notify_count_combo.currentText()) if hasattr(self, 'notify_count_combo') else 0
+            # The notification count is managed by the reminder workflow, not by
+            # the order editor. Preserve it when other order fields are updated.
+            notify_count = self.order_data.get('so_lan_thong_bao', 0)
             success, msg = database.update_order(
                 self.order_data['id'], email, platform, customer, amount, purchase_str, expiry_str, notes, notify_count
             )

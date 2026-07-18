@@ -62,6 +62,38 @@ class OrderDialogTests(unittest.TestCase):
         dialog.purchase_date.setDate(QDate(2026, 6, 1))
         self.assertEqual(dialog.expiry_date.date(), QDate(2026, 7, 1))
 
+    def test_edit_hides_notification_count_and_preserves_it_on_save(self):
+        order_data = {
+            "id": 7,
+            "email_tai_khoan": "user@example.com",
+            "nen_tang": "Facebook",
+            "ten_khach_hang": "Customer",
+            "so_tien": 100000,
+            "ngay_mua": "2026-05-10",
+            "ngay_het_han": "2026-08-15",
+            "ghi_chu": "Note",
+            "so_lan_thong_bao": 4,
+        }
+        dialog = self.make_dialog(order_data)
+
+        self.assertFalse(hasattr(dialog, "notify_count_combo"))
+
+        with patch("dialogs.database.update_order", return_value=(True, "OK")) as update_order:
+            dialog.save_data()
+
+        update_order.assert_called_once_with(
+            7,
+            "user@example.com",
+            "Facebook",
+            "Customer",
+            100000.0,
+            "2026-05-10",
+            "2026-08-15",
+            "Note",
+            4,
+        )
+        self.assertEqual(dialog.result(), QDialog.DialogCode.Accepted)
+
     def test_manual_expiry_is_saved_without_success_popup(self):
         dialog = self.make_dialog()
         dialog.amount_input.setText("100000")

@@ -11,8 +11,8 @@ from PySide6.QtWidgets import (
     QAbstractItemView, QButtonGroup, QDialog, QSizePolicy, QFileDialog,
     QGraphicsDropShadowEffect
 )
-from PySide6.QtCore import Qt, QSize, QDate, QObject, QThread, QTimer, Signal
-from PySide6.QtGui import QFont, QIcon, QPixmap, QColor
+from PySide6.QtCore import Qt, QSize, QDate, QObject, QThread, QTimer, Signal, QEvent, QRectF
+from PySide6.QtGui import QFont, QIcon, QPixmap, QColor, QPainter, QPainterPath, QConicalGradient, QRadialGradient, QPen, QBrush
 
 # Import các file module cục bộ
 import database
@@ -94,6 +94,183 @@ def highlight_expired_status(item):
     font = item.font()
     font.setBold(True)
     item.setFont(font)
+
+
+class AnimatedAvatar(QFrame):
+    def __init__(self, image_path, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(116, 116)
+        
+        # Load and scale pixmap to avoid repeating scaling in paintEvent
+        self.pixmap = QPixmap(image_path)
+        
+        # Animation states
+        self.angle = 0.0          # Clockwise gradient border rotation
+        self.glow_phase = 0.0     # Pulsing glow phase
+        self.hover_factor = 0.0   # 0.0 (normal) to 1.0 (hover)
+        self.hover_target = 0.0
+        self.press_factor = 0.0   # 0.0 (normal) to 1.0 (pressed)
+        self.press_target = 0.0
+        
+        # Current theme colors
+        self.current_border_colors = []
+        self.current_glow_color = QColor(139, 92, 246)
+        self.update_theme_colors()
+        
+        # Timer for smooth animation (~60 FPS)
+        self.timer = QTimer(self)
+        self.timer.setInterval(16)
+        self.timer.timeout.connect(self.animate_tick)
+        self.timer.start()
+        
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+
+    def update_theme_colors(self):
+        from app_styles import ThemeManager
+        theme_name = ThemeManager.get_theme_name()
+        
+        if theme_name == "dark_neon":
+            self.current_border_colors = [
+                (0.0, QColor("#3B82F6")),
+                (0.25, QColor("#4F8CFF")),
+                (0.5, QColor("#8B5CF6")),
+                (0.75, QColor("#A855F7")),
+                (1.0, QColor("#3B82F6"))
+            ]
+            self.current_glow_color = QColor(139, 92, 246) # Purple glow
+        elif theme_name == "classic_dark":
+            self.current_border_colors = [
+                (0.0, QColor("#3B82F6")),
+                (0.33, QColor("#60A5FA")),
+                (0.66, QColor("#2563EB")),
+                (1.0, QColor("#3B82F6"))
+            ]
+            self.current_glow_color = QColor(59, 130, 246) # Blue glow
+        else:  # light
+            self.current_border_colors = [
+                (0.0, QColor("#3B82F6")),
+                (0.33, QColor("#94A3B8")),
+                (0.66, QColor("#60A5FA")),
+                (1.0, QColor("#3B82F6"))
+            ]
+            self.current_glow_color = QColor(59, 130, 246) # Soft blue glow
+            
+        self.update()
+
+    def animate_tick(self):
+        # 1. Rotate clockwise: decrease angle
+        self.angle = (self.angle - 1.0) % 360
+        
+        # 2. Pulse phase: full cycle in ~4 seconds
+        self.glow_phase = (self.glow_phase + 0.026) % (2 * math.pi)
+        
+        # 3. Hover interpolation (200ms transition)
+        if self.hover_factor < self.hover_target:
+            self.hover_factor = min(1.0, self.hover_factor + 0.08)
+        elif self.hover_factor > self.hover_target:
+            self.hover_factor = max(0.0, self.hover_factor - 0.08)
+            
+        # 4. Press interpolation
+        if self.press_factor < self.press_target:
+            self.press_factor = min(1.0, self.press_factor + 0.15)
+        elif self.press_factor > self.press_target:
+            self.press_factor = max(0.0, self.press_factor - 0.08)
+            
+        # Redraw only this widget (highly optimized)
+        self.update()
+
+    def enterEvent(self, event):
+        self.hover_target = 1.0
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self.hover_target = 0.0
+        super().leaveEvent(event)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.press_target = 1.0
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.press_target = 0.0
+        super().mouseReleaseEvent(event)
+
+    def changeEvent(self, event):
+        if event.type() == QEvent.Type.StyleChange or event.type() == QEvent.Type.PaletteChange:
+            self.update_theme_colors()
+        super().changeEvent(event)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        
+        cx = self.width() / 2.0
+        cy = self.height() / 2.0
+        
+        pulse_val = (math.sin(self.glow_phase) + 1.0) / 2.0
+        glow_alpha_base = 0.15 + 0.20 * self.hover_factor
+        glow_alpha = glow_alpha_base + 0.10 * pulse_val
+        
+        base_scale = 1.0 + 0.02 * self.hover_factor
+        scale = base_scale + (0.98 - base_scale) * self.press_factor
+        
+        # --- 1. Draw Glow (behind the avatar image) ---
+        glow_grad = QRadialGradient(cx, cy, 58)
+        
+        c_inner = QColor(self.current_glow_color)
+        from app_styles import ThemeManager
+        if ThemeManager.get_theme_name() == "light":
+            glow_alpha *= 0.5
+            
+        c_inner.setAlpha(int(glow_alpha * 255))
+        c_outer = QColor(self.current_glow_color)
+        c_outer.setAlpha(0)
+        
+        glow_grad.setColorAt(0.0, c_inner)
+        glow_grad.setColorAt(0.75, c_inner)
+        glow_grad.setColorAt(1.0, c_outer)
+        
+        painter.setBrush(QBrush(glow_grad))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawEllipse(0, 0, self.width(), self.height())
+        
+        # --- 2. Draw Avatar Pixmap (centered and scaled with circular clip) ---
+        raw_w, raw_h = 102, 102
+        scaled_w = raw_w * scale
+        scaled_h = raw_h * scale
+        x = cx - scaled_w / 2.0
+        y = cy - scaled_h / 2.0
+        
+        clip_path = QPainterPath()
+        clip_path.addEllipse(QRectF(x, y, scaled_w, scaled_h))
+        
+        painter.save()
+        painter.setClipPath(clip_path)
+        painter.drawPixmap(QRectF(x, y, scaled_w, scaled_h), self.pixmap, QRectF(self.pixmap.rect()))
+        painter.restore()
+        
+        # --- 3. Draw Rotating Gradient Border ---
+        border_radius = 52.5
+        border_rect = QRectF(cx - border_radius, cy - border_radius, border_radius * 2, border_radius * 2)
+        border_thickness = 2.2 + 1.0 * self.hover_factor
+        
+        gradient = QConicalGradient(cx, cy, self.angle)
+        for stop, color in self.current_border_colors:
+            if self.hover_factor > 0:
+                c = QColor(color)
+                factor = int(100 + 25 * self.hover_factor)
+                c = c.lighter(factor)
+                gradient.setColorAt(stop, c)
+            else:
+                gradient.setColorAt(stop, color)
+                
+        pen = QPen(QBrush(gradient), border_thickness)
+        painter.setPen(pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawEllipse(border_rect)
 
 
 class ThemeOptionCard(QFrame):
@@ -296,6 +473,18 @@ class MainWindow(QMainWindow):
         self.all_accounts = []
         self.acc_current_page = 1
         self.acc_rows_per_page = 10
+
+        # Selection callbacks are connected while the tables are being built.
+        # Keep their complete state available from the very first mouse event;
+        # otherwise clicking a normal data cell before clicking STT raises an
+        # AttributeError in clear_*_selection and Qt drops that click.
+        self.selected_account_ids = set()
+        self.account_selection_anchor_index = None
+        self._account_drag_base_ids = set()
+        self.selected_order_ids = set()
+        self.order_selection_anchor_index = None
+        self._order_drag_base_ids = set()
+
         self._update_thread = None
         self._update_worker = None
         self._pending_update_download = None
@@ -331,28 +520,9 @@ class MainWindow(QMainWindow):
         sidebar_layout.setSpacing(7)
         
         # Tiêu đề Sidebar thương hiệu (Netflix Store ozon)
-        avatar_frame = QFrame()
+        avatar_frame = AnimatedAvatar(resource_path("assets/app-logo-circle.png"))
         avatar_frame.setObjectName("AvatarFrame")
-        avatar_frame.setFixedSize(116, 116)
-        avatar_layout = QVBoxLayout(avatar_frame)
-        avatar_layout.setContentsMargins(6, 6, 6, 6)
-        brand_label = QLabel()
-        brand_label.setPixmap(
-            QPixmap(resource_path("assets/app-logo-circle.png")).scaled(
-                102, 102,
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
-            )
-        )
-        brand_label.setToolTip("Netflix Ozon")
-        brand_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        brand_label.setStyleSheet("background: transparent; border-radius: 51px;")
-        avatar_layout.addWidget(brand_label)
-        avatar_shadow = QGraphicsDropShadowEffect(avatar_frame)
-        avatar_shadow.setBlurRadius(26)
-        avatar_shadow.setOffset(0, 0)
-        avatar_shadow.setColor(QColor(72, 88, 255, 155))
-        avatar_frame.setGraphicsEffect(avatar_shadow)
+        avatar_frame.setToolTip("Netflix Ozon")
         sidebar_layout.addWidget(avatar_frame, 0, Qt.AlignmentFlag.AlignHCenter)
 
         user_name = QLabel("Nghiazon")
@@ -658,6 +828,16 @@ class MainWindow(QMainWindow):
             lambda row: self.on_edit_account_clicked(self.current_accounts[row]),
             lambda row: self.on_delete_account_clicked(self.current_accounts[row])
         )
+        self.acc_table.set_stt_selection_callbacks(
+            toggle_callback=self.on_account_stt_click,
+            ensure_callback=self.ensure_account_row_selection,
+            delete_selected_callback=self.delete_selected_accounts,
+            selected_count_callback=lambda: len(self.selected_account_ids),
+            clear_selection_callback=self.clear_account_selection,
+            begin_drag_callback=self.begin_account_stt_drag,
+            update_drag_callback=self.update_account_stt_drag,
+            end_drag_callback=self.end_account_stt_drag,
+        )
         self.acc_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.acc_table.setAlternatingRowColors(True)
         self.acc_table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -815,6 +995,100 @@ class MainWindow(QMainWindow):
         """Đổi trang hiển thị; không thay đổi truy vấn hay dữ liệu tài khoản."""
         self.acc_current_page += direction
         self.refresh_accounts()
+
+    def on_account_stt_click(self, row, modifiers=Qt.KeyboardModifier.NoModifier):
+        if row < 0 or row >= len(self.current_accounts):
+            return
+        acc_id = self.current_accounts[row]['id']
+        
+        if modifiers & Qt.KeyboardModifier.ControlModifier:
+            if modifiers & Qt.KeyboardModifier.ShiftModifier:
+                anchor = self.account_selection_anchor_index if self.account_selection_anchor_index is not None else 0
+                start_r = min(anchor, row)
+                end_r = max(anchor, row)
+                for r in range(start_r, end_r + 1):
+                    self.selected_account_ids.add(self.current_accounts[r]['id'])
+            else:
+                if acc_id in self.selected_account_ids:
+                    self.selected_account_ids.remove(acc_id)
+                else:
+                    self.selected_account_ids.add(acc_id)
+                self.account_selection_anchor_index = row
+        elif modifiers & Qt.KeyboardModifier.ShiftModifier:
+            anchor = self.account_selection_anchor_index if self.account_selection_anchor_index is not None else 0
+            self.selected_account_ids.clear()
+            start_r = min(anchor, row)
+            end_r = max(anchor, row)
+            for r in range(start_r, end_r + 1):
+                self.selected_account_ids.add(self.current_accounts[r]['id'])
+        else:
+            self.selected_account_ids = {acc_id}
+            self.account_selection_anchor_index = row
+            
+        self._apply_account_selection_highlights()
+
+    def _apply_account_selection_highlights(self):
+        highlighted = []
+        for row, acc in enumerate(self.current_accounts):
+            if acc['id'] in self.selected_account_ids:
+                highlighted.append(row)
+        self.acc_table.set_persistent_selected_rows(highlighted)
+
+    def ensure_account_row_selection(self, row):
+        if row < 0 or row >= len(self.current_accounts):
+            return
+        acc_id = self.current_accounts[row]['id']
+        if acc_id not in self.selected_account_ids:
+            self.selected_account_ids = {acc_id}
+            self.account_selection_anchor_index = row
+            self._apply_account_selection_highlights()
+
+    def begin_account_stt_drag(self, row, modifiers):
+        if modifiers & Qt.KeyboardModifier.ControlModifier:
+            self._account_drag_base_ids = set(self.selected_account_ids)
+        else:
+            self._account_drag_base_ids = set()
+        self.account_selection_anchor_index = row
+
+    def update_account_stt_drag(self, start, current, modifiers):
+        start_r = min(start, current)
+        end_r = max(start, current)
+        range_ids = set()
+        for r in range(start_r, end_r + 1):
+            if 0 <= r < len(self.current_accounts):
+                range_ids.add(self.current_accounts[r]['id'])
+        if modifiers & Qt.KeyboardModifier.ControlModifier:
+            self.selected_account_ids = self._account_drag_base_ids.union(range_ids)
+        else:
+            self.selected_account_ids = range_ids
+        self._apply_account_selection_highlights()
+
+    def end_account_stt_drag(self, start, current, modifiers):
+        pass
+
+    def clear_account_selection(self, update_styles=True):
+        self.selected_account_ids.clear()
+        self.account_selection_anchor_index = None
+        self._account_drag_base_ids.clear()
+        if update_styles:
+            self._apply_account_selection_highlights()
+
+    def delete_selected_accounts(self):
+        if not self.selected_account_ids:
+            return
+        reply = QMessageBox.question(
+            self,
+            "Xóa hàng loạt",
+            f"Bạn có chắc muốn xóa {len(self.selected_account_ids)} tài khoản đã chọn?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            import database
+            if database.delete_accounts_soft_bulk(self.selected_account_ids):
+                self.clear_account_selection(update_styles=False)
+                self.refresh_accounts()
+                self.refresh_charts()
 
     def change_account_page_size(self, index):
         """Thay số dòng hiển thị trên một trang."""
@@ -1111,6 +1385,16 @@ class MainWindow(QMainWindow):
             lambda row: self.on_edit_order_clicked(self.current_orders[row]),
             lambda row: self.on_delete_order_clicked(self.current_orders[row])
         )
+        self.order_table.set_stt_selection_callbacks(
+            toggle_callback=self.on_order_stt_click,
+            ensure_callback=self.ensure_order_row_selection,
+            delete_selected_callback=self.delete_selected_orders,
+            selected_count_callback=lambda: len(self.selected_order_ids),
+            clear_selection_callback=self.clear_order_selection,
+            begin_drag_callback=self.begin_order_stt_drag,
+            update_drag_callback=self.update_order_stt_drag,
+            end_drag_callback=self.end_order_stt_drag,
+        )
         self.order_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.order_table.setAlternatingRowColors(True)
         self.order_table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -1222,7 +1506,102 @@ class MainWindow(QMainWindow):
 
     def on_order_status_filter_changed(self, _index):
         """Lọc đơn hàng ngay khi người dùng chọn trạng thái."""
-        self.refresh_orders()
+        self.refresh_orders(reset_page=True)
+
+    def on_order_stt_click(self, row, modifiers=Qt.KeyboardModifier.NoModifier):
+        if row < 0 or row >= len(self.current_orders):
+            return
+        order_id = self.current_orders[row]['id']
+        
+        if modifiers & Qt.KeyboardModifier.ControlModifier:
+            if modifiers & Qt.KeyboardModifier.ShiftModifier:
+                anchor = self.order_selection_anchor_index if self.order_selection_anchor_index is not None else 0
+                start_r = min(anchor, row)
+                end_r = max(anchor, row)
+                for r in range(start_r, end_r + 1):
+                    self.selected_order_ids.add(self.current_orders[r]['id'])
+            else:
+                if order_id in self.selected_order_ids:
+                    self.selected_order_ids.remove(order_id)
+                else:
+                    self.selected_order_ids.add(order_id)
+                self.order_selection_anchor_index = row
+        elif modifiers & Qt.KeyboardModifier.ShiftModifier:
+            anchor = self.order_selection_anchor_index if self.order_selection_anchor_index is not None else 0
+            self.selected_order_ids.clear()
+            start_r = min(anchor, row)
+            end_r = max(anchor, row)
+            for r in range(start_r, end_r + 1):
+                self.selected_order_ids.add(self.current_orders[r]['id'])
+        else:
+            self.selected_order_ids = {order_id}
+            self.order_selection_anchor_index = row
+            
+        self._apply_order_selection_highlights()
+
+    def _apply_order_selection_highlights(self):
+        highlighted = []
+        for row, ord in enumerate(self.current_orders):
+            if ord['id'] in self.selected_order_ids:
+                highlighted.append(row)
+        self.order_table.set_persistent_selected_rows(highlighted)
+
+    def ensure_order_row_selection(self, row):
+        if row < 0 or row >= len(self.current_orders):
+            return
+        order_id = self.current_orders[row]['id']
+        if order_id not in self.selected_order_ids:
+            self.selected_order_ids = {order_id}
+            self.order_selection_anchor_index = row
+            self._apply_order_selection_highlights()
+
+    def begin_order_stt_drag(self, row, modifiers):
+        if modifiers & Qt.KeyboardModifier.ControlModifier:
+            self._order_drag_base_ids = set(self.selected_order_ids)
+        else:
+            self._order_drag_base_ids = set()
+        self.order_selection_anchor_index = row
+
+    def update_order_stt_drag(self, start, current, modifiers):
+        start_r = min(start, current)
+        end_r = max(start, current)
+        range_ids = set()
+        for r in range(start_r, end_r + 1):
+            if 0 <= r < len(self.current_orders):
+                range_ids.add(self.current_orders[r]['id'])
+        if modifiers & Qt.KeyboardModifier.ControlModifier:
+            self.selected_order_ids = self._order_drag_base_ids.union(range_ids)
+        else:
+            self.selected_order_ids = range_ids
+        self._apply_order_selection_highlights()
+
+    def end_order_stt_drag(self, start, current, modifiers):
+        pass
+
+    def clear_order_selection(self, update_styles=True):
+        self.selected_order_ids.clear()
+        self.order_selection_anchor_index = None
+        self._order_drag_base_ids.clear()
+        if update_styles:
+            self._apply_order_selection_highlights()
+
+    def delete_selected_orders(self):
+        if not self.selected_order_ids:
+            return
+        reply = QMessageBox.question(
+            self,
+            "Xóa hàng loạt",
+            f"Bạn có chắc muốn xóa {len(self.selected_order_ids)} đơn hàng đã chọn?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            import database
+            if database.delete_orders_soft_bulk(self.selected_order_ids):
+                self.clear_order_selection(update_styles=False)
+                self.refresh_orders()
+                self.refresh_accounts()
+                self.refresh_charts()
 
     def create_action_buttons_for_order(self, order_data):
         """Tạo cụm nút icon Sửa/Xóa nhưng giữ nguyên callback nghiệp vụ."""

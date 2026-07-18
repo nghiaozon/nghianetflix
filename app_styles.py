@@ -157,10 +157,8 @@ QToolTip {
     border-right: 1px solid {BORDER};
 }
 #AvatarFrame {
-    background: qradialgradient(cx:0.5, cy:0.5, radius:0.75,
-        stop:0 {INPUT_BACKGROUND}, stop:0.72 {SIDEBAR}, stop:0.86 {BUTTON_PRIMARY}, stop:1 {BUTTON_PRIMARY_HOVER});
-    border: 2px solid {BORDER};
-    border-radius: 58px;
+    background: transparent;
+    border: none;
 }
 #UserName { color: {TEXT_PRIMARY}; font-size: 18px; font-weight: 700; }
 #AdminBadge {
