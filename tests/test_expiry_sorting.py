@@ -119,16 +119,11 @@ class ExpirySortingTests(unittest.TestCase):
 
         self.assertEqual(database.get_accounts()[0]["id"], 1)
 
-    def test_orders_sort_before_any_page_slice_and_keep_search_order(self):
+    def test_orders_keep_expiry_order_for_the_full_search_result(self):
         self.seed_orders()
 
         all_rows = database.get_orders("netflix", "Tất cả")
-        first_page = all_rows[:2]
-        second_page = all_rows[2:4]
-
         self.assertEqual([row["id"] for row in all_rows], [4, 2, 1, 6, 5])
-        self.assertEqual([row["id"] for row in first_page], [4, 2])
-        self.assertEqual([row["id"] for row in second_page], [1, 6])
 
     def test_order_status_filter_keeps_expiry_ascending(self):
         self.seed_orders()

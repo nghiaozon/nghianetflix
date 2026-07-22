@@ -1,6 +1,6 @@
 """Application release information."""
 
-APP_VERSION = "1.0.15"
+APP_VERSION = "1.0.16"
 
 GITHUB_OWNER = "nghiaozon"
 GITHUB_REPOSITORY = "nghianetflix"

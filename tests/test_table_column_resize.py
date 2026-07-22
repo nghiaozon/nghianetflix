@@ -75,6 +75,34 @@ class TableColumnResizeTests(unittest.TestCase):
         self.assertEqual(restored.columnWidth(3), 280)
         restored.close()
 
+    def test_main_tables_store_widths_separately_in_nested_settings(self):
+        orders = CopyableTableWidget()
+        orders.setColumnCount(len(ORDER_COLUMNS))
+        orders.configure_resizable_columns("orders", ORDER_COLUMNS)
+        orders.horizontalHeader().resizeSection(1, 275)
+
+        accounts = CopyableTableWidget()
+        accounts.setColumnCount(len(ORDER_COLUMNS))
+        accounts.configure_resizable_columns("accounts", ORDER_COLUMNS)
+        accounts.horizontalHeader().resizeSection(1, 195)
+
+        with open(self.settings_path, "r", encoding="utf-8") as config:
+            saved = json.load(config)
+        self.assertEqual(saved["table_column_widths"]["orders"]["email"], 275)
+        self.assertEqual(saved["table_column_widths"]["accounts"]["email"], 195)
+        orders.close()
+        accounts.close()
+
+    def test_invalid_nested_width_settings_fall_back_to_safe_defaults(self):
+        with open(self.settings_path, "w", encoding="utf-8") as config:
+            json.dump({"table_column_widths": "invalid"}, config)
+
+        table = CopyableTableWidget()
+        table.setColumnCount(len(ORDER_COLUMNS))
+        table.configure_resizable_columns("orders", ORDER_COLUMNS)
+        self.assertEqual(table.columnWidth(3), 220)
+        table.close()
+
     def test_tooltip_is_only_shown_for_truncated_configured_data(self):
         customer_index = self.table.model().index(0, 3)
         customer_point = self.table.visualRect(customer_index).center()

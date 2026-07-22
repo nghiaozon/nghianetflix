@@ -1,5 +1,6 @@
 """Resolve writable files consistently in source and PyInstaller builds."""
 
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -42,3 +43,10 @@ def config_file(name: str) -> str:
 def external_file(name: str) -> str:
     """Resolve user-editable configuration beside the executable."""
     return str(app_dir() / name)
+
+
+def resource_path(relative_path: str) -> str:
+    """Resolve assets both from source and from a PyInstaller bundle."""
+    base_path = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base_path, relative_path)
+

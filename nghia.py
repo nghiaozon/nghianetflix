@@ -473,10 +473,18 @@ class MainWindow(QMainWindow):
         self.current_orders = []
         self.all_accounts = []
         self.all_orders = []
-        self.acc_current_page = 1
-        self.acc_rows_per_page = 10
-        self.order_current_page = 1
-        self.order_rows_per_page = 10
+        self._account_search_timer = QTimer(self)
+        self._account_search_timer.setSingleShot(True)
+        self._account_search_timer.setInterval(160)
+        self._account_search_timer.timeout.connect(
+            lambda: self.refresh_accounts(scroll_to_top=True)
+        )
+        self._order_search_timer = QTimer(self)
+        self._order_search_timer.setSingleShot(True)
+        self._order_search_timer.setInterval(160)
+        self._order_search_timer.timeout.connect(
+            lambda: self.refresh_orders(scroll_to_top=True)
+        )
 
         # Selection callbacks are connected while the tables are being built.
         # Keep their complete state available from the very first mouse event;
@@ -744,7 +752,7 @@ class MainWindow(QMainWindow):
         elif index == 1:
             self.refresh_orders()
         elif index == 2:
-            self.refresh_charts()
+            self.refresh_charts(select_current=True)
 
     # ==========================================
     # PHÂN HỆ 1: QUẢN LÝ DANH SÁCH TÀI KHOẢN
@@ -790,9 +798,7 @@ class MainWindow(QMainWindow):
         self.acc_search_input.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
         )
-        self.acc_search_input.textChanged.connect(
-            lambda _text: self.refresh_accounts(reset_page=True)
-        )
+        self.acc_search_input.textChanged.connect(self.schedule_account_search_refresh)
         top_bar_layout.addWidget(self.acc_search_input, 1)
         
         # Bộ lọc trạng thái
@@ -853,60 +859,31 @@ class MainWindow(QMainWindow):
         self.acc_table.setHorizontalHeaderLabels(headers)
 
         self.acc_table.configure_resizable_columns(
-            "account_table_columns",
+            "accounts",
             [
-                {"key": "stt", "width": 70, "min_width": 55},
-                {"key": "email", "width": 260, "min_width": 180},
-                {"key": "password", "width": 180, "min_width": 130},
-                {"key": "linked", "width": 100, "min_width": 80},
-                {"key": "note", "width": 180, "min_width": 110},
-                {"key": "expiry_date", "width": 130, "min_width": 120},
-                {"key": "status", "width": 150, "min_width": 130},
-                {"key": "source", "width": 130, "min_width": 100},
-                {"key": "actions", "width": 120, "min_width": 110},
+                {"key": "stt", "width": 60, "min_width": 50},
+                {"key": "email", "width": 220, "min_width": 110},
+                {"key": "password", "width": 150, "min_width": 100},
+                {"key": "linked", "width": 80, "min_width": 70},
+                {"key": "note", "width": 140, "min_width": 90},
+                {"key": "expiry_date", "width": 120, "min_width": 100},
+                {"key": "status", "width": 130, "min_width": 110},
+                {"key": "source", "width": 110, "min_width": 90},
+                {"key": "actions", "width": 110, "min_width": 100},
             ],
-            tooltip_columns=(1, 4, 7),
+            tooltip_columns=(1, 2, 4, 7),
         )
         self.acc_table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.acc_table.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
+        self.acc_table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.acc_table.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+        self.acc_table.verticalScrollBar().setSingleStep(50)
         
         table_card_layout.addWidget(self.acc_table, 1)
         # Đặt chiều cao hàng mặc định để chứa các nút hành động
         self.acc_table.verticalHeader().setDefaultSectionSize(50)
         self.acc_table.ApplyDataGridViewTheme()
 
-        pagination_layout = QHBoxLayout()
-        pagination_layout.setContentsMargins(12, 0, 12, 0)
-        self.acc_results_label = QLabel("Hiển thị 0 kết quả")
-        self.acc_results_label.setObjectName("PaginationLabel")
-        pagination_layout.addWidget(self.acc_results_label)
-        pagination_layout.addStretch()
-
-        self.acc_prev_button = QPushButton("‹")
-        self.acc_prev_button.setProperty("class", "PageButton")
-        self.acc_prev_button.setToolTip("Trang trước")
-        self.acc_prev_button.clicked.connect(lambda: self.change_account_page(-1))
-        pagination_layout.addWidget(self.acc_prev_button)
-
-        self.acc_page_button = QPushButton("1")
-        self.acc_page_button.setProperty("class", "PageCurrent")
-        self.acc_page_button.setFixedSize(36, 36)
-        self.acc_page_button.setEnabled(False)
-        pagination_layout.addWidget(self.acc_page_button)
-
-        self.acc_next_button = QPushButton("›")
-        self.acc_next_button.setProperty("class", "PageButton")
-        self.acc_next_button.setToolTip("Trang sau")
-        self.acc_next_button.clicked.connect(lambda: self.change_account_page(1))
-        pagination_layout.addWidget(self.acc_next_button)
-        pagination_layout.addSpacing(20)
-
-        self.acc_rows_combo = QComboBox()
-        self.acc_rows_combo.addItems(["10 / trang", "20 / trang", "50 / trang"])
-        self.acc_rows_combo.setFixedWidth(112)
-        self.acc_rows_combo.currentIndexChanged.connect(self.change_account_page_size)
-        pagination_layout.addWidget(self.acc_rows_combo)
-        table_card_layout.addLayout(pagination_layout)
         layout.addWidget(table_card, 1)
         
         self.content_stack.addWidget(page)
@@ -915,90 +892,84 @@ class MainWindow(QMainWindow):
         """Cập nhật trạng thái tài khoản tự động dựa trên ngày hết hạn trước khi hiển thị."""
         database.sync_account_status_by_expire_date()
 
-    def refresh_accounts(self, *_args, reset_page=False):
-        """Truy vấn cơ sở dữ liệu và tải lại bảng danh sách tài khoản."""
+    def schedule_account_search_refresh(self, _text):
+        """Debounce tìm kiếm để không tạo lại bảng lớn cho từng phím gõ."""
+        self._account_search_timer.start()
+
+    def refresh_accounts(self, *_args, scroll_to_top=False):
+        """Truy vấn, tìm kiếm, lọc, sắp xếp rồi render toàn bộ tài khoản."""
         self.update_account_status_by_expire_date()
         search_query = self.acc_search_input.text().strip()
         status_key = normalize_status_filter(self.acc_filter_combo.currentText())
         status_filter = ACCOUNT_DATABASE_FILTER_MAP[status_key]
 
         self.all_accounts = database.get_accounts(search_query, status_filter)
-        if reset_page:
-            self.acc_current_page = 1
-        total_pages = max(1, math.ceil(len(self.all_accounts) / self.acc_rows_per_page))
-        self.acc_current_page = min(max(1, self.acc_current_page), total_pages)
-        start_index = (self.acc_current_page - 1) * self.acc_rows_per_page
-        end_index = start_index + self.acc_rows_per_page
-        self.current_accounts = self.all_accounts[start_index:end_index]
-        
-        self.acc_table.setRowCount(0)
-        self.acc_table.setRowCount(len(self.current_accounts))
-        
-        for idx, row in enumerate(self.current_accounts):
-            # Cột [STT] đánh lại theo danh sách hiện đang hiển thị.
-            stt_item = QTableWidgetItem(str(start_index + idx + 1))
-            stt_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.acc_table.setItem(idx, 0, stt_item)
-
-            # Cột [Email]
-            email_item = QTableWidgetItem(row['email'])
-            email_item.setToolTip(row['email'] or "")
-            self.acc_table.setItem(idx, 1, email_item)
-
-            # Cột [Mật khẩu]
-            password = row['mat_khau'] or ""
-            pwd_item = QTableWidgetItem(password)
-            pwd_item.setToolTip(password)
-            self.acc_table.setItem(idx, 2, pwd_item)
-
-            # Cột [Liên kết] - badge/button hiển thị số khách hàng đang dùng
-            self.acc_table.setCellWidget(idx, 3, self.create_link_button_for_account(row))
-
-            # Cột [Ghi chú]
-            note_item = QTableWidgetItem(row['ghi_chu'] or "—")
-            note_item.setToolTip(row['ghi_chu'] or "Không có ghi chú")
-            self.acc_table.setItem(idx, 4, note_item)
-
-            # Cột [Ngày hết hạn] - Định dạng dd/mm/yyyy
-            exp_date = row['ngay_het_han']
-            try:
-                qdate = QDate.fromString(exp_date, "yyyy-MM-dd")
-                exp_display = qdate.toString("dd/MM/yyyy")
-            except:
-                exp_display = exp_date
-            self.acc_table.setItem(idx, 5, QTableWidgetItem(exp_display))
-
-            # Cột [Trạng thái]
-            trang_thai = row['trang_thai']
-            self.acc_table.setCellWidget(idx, 6, self.create_status_badge(trang_thai))
-
-            # Tô màu trạng thái cho sinh động
-            # Cột [Nguồn]
-            self.acc_table.setItem(idx, 7, QTableWidgetItem(row['nguon'] or "Khách hàng"))
-
-            # Cột [Thao tác] (Sửa, Xóa)
-            self.acc_table.setCellWidget(idx, 8, self.create_action_buttons_for_account(row))
-
-        # Re-apply after every reload so new rows/items/widgets never inherit
-        # colours from the Windows theme.
-        self.acc_table.ApplyDataGridViewTheme()
-        visible_start = start_index + 1 if self.all_accounts else 0
-        visible_end = min(end_index, len(self.all_accounts))
-        self.acc_results_label.setText(
-            f"Hiển thị {visible_start}–{visible_end} trong {len(self.all_accounts)} kết quả"
+        self.current_accounts = self.all_accounts
+        order_counts = database.get_active_order_counts_for_emails(
+            account.get('email') for account in self.current_accounts
         )
-        self.acc_page_button.setText(str(self.acc_current_page))
-        self.acc_prev_button.setEnabled(self.acc_current_page > 1)
-        self.acc_next_button.setEnabled(self.acc_current_page < total_pages)
+        vertical_bar = self.acc_table.verticalScrollBar()
+        horizontal_bar = self.acc_table.horizontalScrollBar()
+        previous_vertical = vertical_bar.value()
+        previous_horizontal = horizontal_bar.value()
+
+        # Batch all changes so scrolling never rebuilds rows and a large
+        # refresh only repaints once after every cell has been populated.
+        self.acc_table.setUpdatesEnabled(False)
+        try:
+            self.acc_table.setRowCount(0)
+            self.acc_table.setRowCount(len(self.current_accounts))
+            for idx, row in enumerate(self.current_accounts):
+                stt_item = QTableWidgetItem(str(idx + 1))
+                stt_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                self.acc_table.setItem(idx, 0, stt_item)
+
+                email_item = QTableWidgetItem(row['email'])
+                email_item.setToolTip(row['email'] or "")
+                self.acc_table.setItem(idx, 1, email_item)
+
+                password = row['mat_khau'] or ""
+                pwd_item = QTableWidgetItem(password)
+                pwd_item.setToolTip(password)
+                self.acc_table.setItem(idx, 2, pwd_item)
+
+                self.acc_table.setCellWidget(
+                    idx,
+                    3,
+                    self.create_link_button_for_account(
+                        row, order_counts.get(row.get('email'), 0)
+                    ),
+                )
+
+                note_item = QTableWidgetItem(row['ghi_chu'] or "—")
+                note_item.setToolTip(row['ghi_chu'] or "Không có ghi chú")
+                self.acc_table.setItem(idx, 4, note_item)
+
+                exp_date = row['ngay_het_han']
+                try:
+                    qdate = QDate.fromString(exp_date, "yyyy-MM-dd")
+                    exp_display = qdate.toString("dd/MM/yyyy")
+                except (TypeError, ValueError):
+                    exp_display = exp_date
+                self.acc_table.setItem(idx, 5, QTableWidgetItem(exp_display))
+
+                self.acc_table.setCellWidget(
+                    idx, 6, self.create_status_badge(row['trang_thai'])
+                )
+                self.acc_table.setItem(idx, 7, QTableWidgetItem(row['nguon'] or "Khách hàng"))
+                self.acc_table.setCellWidget(idx, 8, self.create_action_buttons_for_account(row))
+
+            self.acc_table.refresh_cell_widget_styles()
+        finally:
+            self.acc_table.setUpdatesEnabled(True)
+
+        vertical_bar.setValue(0 if scroll_to_top else min(previous_vertical, vertical_bar.maximum()))
+        horizontal_bar.setValue(min(previous_horizontal, horizontal_bar.maximum()))
+        self._apply_account_selection_highlights(force=True)
 
     def on_account_status_filter_changed(self, _index):
-        """Lọc tài khoản ngay khi người dùng chọn trạng thái và về trang đầu."""
-        self.refresh_accounts(reset_page=True)
-
-    def change_account_page(self, direction):
-        """Đổi trang hiển thị; không thay đổi truy vấn hay dữ liệu tài khoản."""
-        self.acc_current_page += direction
-        self.refresh_accounts()
+        """Lọc tài khoản và đưa bảng về đầu danh sách kết quả."""
+        self.refresh_accounts(scroll_to_top=True)
 
     def on_account_stt_click(self, row, modifiers=Qt.KeyboardModifier.NoModifier):
         if row < 0 or row >= len(self.current_accounts):
@@ -1031,12 +1002,15 @@ class MainWindow(QMainWindow):
             
         self._apply_account_selection_highlights()
 
-    def _apply_account_selection_highlights(self):
+    def _apply_account_selection_highlights(self, force=False):
         highlighted = []
         for row, acc in enumerate(self.current_accounts):
             if acc['id'] in self.selected_account_ids:
                 highlighted.append(row)
-        self.acc_table.set_persistent_selected_rows(highlighted)
+        if force:
+            self.acc_table.set_persistent_selected_rows(highlighted, force=True)
+        else:
+            self.acc_table.set_persistent_selected_rows(highlighted)
 
     def ensure_account_row_selection(self, row):
         if row < 0 or row >= len(self.current_accounts):
@@ -1093,13 +1067,6 @@ class MainWindow(QMainWindow):
                 self.clear_account_selection(update_styles=False)
                 self.refresh_accounts()
                 self.refresh_charts()
-
-    def change_account_page_size(self, index):
-        """Thay số dòng hiển thị trên một trang."""
-        sizes = (10, 20, 50)
-        self.acc_rows_per_page = sizes[index] if 0 <= index < len(sizes) else 10
-        self.acc_current_page = 1
-        self.refresh_accounts()
 
     def create_status_badge(self, status):
         """Create a compact status pill that remains readable on alternating rows."""
@@ -1163,17 +1130,19 @@ class MainWindow(QMainWindow):
         layout.addWidget(delete_btn)
         return widget
 
-    def create_link_button_for_account(self, account_data):
+    def create_link_button_for_account(self, account_data, order_count=None):
         """Trả về một badge/button nhỏ hiển thị số khách hàng đang dùng tài khoản.
 
         Badge có tooltip, hiệu ứng hover, và bấm sẽ chuyển sang Tab Đơn Hàng để lọc.
         """
         email = account_data.get('email')
         # Lấy số lượng đơn hàng đang dùng email này (không tính đã xóa)
-        try:
-            count = database.get_active_order_count_for_email(email) if email else 0
-        except Exception:
-            count = 0
+        if order_count is None:
+            try:
+                order_count = database.get_active_order_count_for_email(email) if email else 0
+            except Exception:
+                order_count = 0
+        count = order_count
 
         # Hiển thị văn bản badge
         if count <= 0:
@@ -1229,7 +1198,7 @@ class MainWindow(QMainWindow):
         if idx >= 0:
             self.order_filter_combo.setCurrentIndex(idx)
 
-        self.refresh_orders(reset_page=True)
+        self.refresh_orders(scroll_to_top=True)
 
         # Nếu không có đơn hàng liên quan, hiện thông báo
         if not self.current_orders:
@@ -1344,9 +1313,7 @@ class MainWindow(QMainWindow):
         self.order_search_input.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
         )
-        self.order_search_input.textChanged.connect(
-            lambda _text: self.refresh_orders(reset_page=True)
-        )
+        self.order_search_input.textChanged.connect(self.schedule_order_search_refresh)
         top_bar_layout.addWidget(self.order_search_input, 1)
         
         # Bộ lọc trạng thái đơn hàng
@@ -1414,58 +1381,29 @@ class MainWindow(QMainWindow):
         self.order_table.setHorizontalHeaderLabels(headers)
         
         self.order_table.configure_resizable_columns(
-            "order_table_columns",
+            "orders",
             [
-                {"key": "stt", "width": 70, "min_width": 55},
-                {"key": "email", "width": 250, "min_width": 180},
-                {"key": "platform", "width": 120, "min_width": 100},
-                {"key": "customer_name", "width": 220, "min_width": 140},
-                {"key": "amount", "width": 120, "min_width": 110},
-                {"key": "note", "width": 160, "min_width": 110},
-                {"key": "purchase_date", "width": 120, "min_width": 110},
-                {"key": "expiry_date", "width": 130, "min_width": 120},
-                {"key": "status", "width": 150, "min_width": 130},
-                {"key": "actions", "width": 120, "min_width": 110},
+                {"key": "stt", "width": 60, "min_width": 50},
+                {"key": "email", "width": 210, "min_width": 120},
+                {"key": "platform", "width": 100, "min_width": 80},
+                {"key": "customer_name", "width": 220, "min_width": 100},
+                {"key": "amount", "width": 100, "min_width": 90},
+                {"key": "note", "width": 130, "min_width": 90},
+                {"key": "purchase_date", "width": 110, "min_width": 100},
+                {"key": "expiry_date", "width": 120, "min_width": 100},
+                {"key": "status", "width": 130, "min_width": 110},
+                {"key": "actions", "width": 110, "min_width": 100},
             ],
             tooltip_columns=(1, 2, 3, 5),
         )
         self.order_table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.order_table.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
+        self.order_table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.order_table.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+        self.order_table.verticalScrollBar().setSingleStep(50)
         
         table_card_layout.addWidget(self.order_table, 1)
 
-        pagination_layout = QHBoxLayout()
-        pagination_layout.setContentsMargins(12, 0, 12, 0)
-        self.order_results_label = QLabel("Hiển thị 0 kết quả")
-        self.order_results_label.setObjectName("PaginationLabel")
-        pagination_layout.addWidget(self.order_results_label)
-        pagination_layout.addStretch()
-
-        self.order_prev_button = QPushButton("‹")
-        self.order_prev_button.setProperty("class", "PageButton")
-        self.order_prev_button.setToolTip("Trang trước")
-        self.order_prev_button.clicked.connect(lambda: self.change_order_page(-1))
-        pagination_layout.addWidget(self.order_prev_button)
-
-        self.order_page_button = QPushButton("1")
-        self.order_page_button.setProperty("class", "PageCurrent")
-        self.order_page_button.setFixedSize(36, 36)
-        self.order_page_button.setEnabled(False)
-        pagination_layout.addWidget(self.order_page_button)
-
-        self.order_next_button = QPushButton("›")
-        self.order_next_button.setProperty("class", "PageButton")
-        self.order_next_button.setToolTip("Trang sau")
-        self.order_next_button.clicked.connect(lambda: self.change_order_page(1))
-        pagination_layout.addWidget(self.order_next_button)
-        pagination_layout.addSpacing(20)
-
-        self.order_rows_combo = QComboBox()
-        self.order_rows_combo.addItems(["10 / trang", "20 / trang", "50 / trang"])
-        self.order_rows_combo.setFixedWidth(112)
-        self.order_rows_combo.currentIndexChanged.connect(self.change_order_page_size)
-        pagination_layout.addWidget(self.order_rows_combo)
-        table_card_layout.addLayout(pagination_layout)
         layout.addWidget(table_card, 1)
         # Đặt chiều cao hàng mặc định cho bảng đơn hàng
         self.order_table.verticalHeader().setDefaultSectionSize(50)
@@ -1473,27 +1411,31 @@ class MainWindow(QMainWindow):
         
         self.content_stack.addWidget(page)
 
-    def refresh_orders(self, *_args, reset_page=False):
-        """Tải, lọc, sắp xếp toàn bộ đơn hàng rồi mới cắt trang hiển thị."""
+    def schedule_order_search_refresh(self, _text):
+        """Debounce tìm kiếm để không tạo lại bảng lớn cho từng phím gõ."""
+        self._order_search_timer.start()
+
+    def refresh_orders(self, *_args, scroll_to_top=False):
+        """Tìm kiếm, lọc, sắp xếp rồi render toàn bộ đơn hàng."""
         search_query = self.order_search_input.text().strip()
         status_key = normalize_status_filter(self.order_filter_combo.currentText())
         status_filter = ORDER_DATABASE_FILTER_MAP[status_key]
         
         self.all_orders = database.get_orders(search_query, status_filter)
-        if reset_page:
-            self.order_current_page = 1
-        total_pages = max(1, math.ceil(len(self.all_orders) / self.order_rows_per_page))
-        self.order_current_page = min(max(1, self.order_current_page), total_pages)
-        start_index = (self.order_current_page - 1) * self.order_rows_per_page
-        end_index = start_index + self.order_rows_per_page
-        self.current_orders = self.all_orders[start_index:end_index]
-        
+        self.current_orders = self.all_orders
+        vertical_bar = self.order_table.verticalScrollBar()
+        horizontal_bar = self.order_table.horizontalScrollBar()
+        previous_vertical = vertical_bar.value()
+        previous_horizontal = horizontal_bar.value()
+        self.order_table.setUpdatesEnabled(False)
         self.order_table.setRowCount(0)
         self.order_table.setRowCount(len(self.current_orders))
+        from app_styles import ThemeManager
+        theme = ThemeManager.get_active_theme()
         
         for idx, row in enumerate(self.current_orders):
             # Cột [STT] đánh lại theo danh sách hiện đang hiển thị.
-            stt_item = QTableWidgetItem(str(start_index + idx + 1))
+            stt_item = QTableWidgetItem(str(idx + 1))
             stt_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             self.order_table.setItem(idx, 0, stt_item)
 
@@ -1513,8 +1455,6 @@ class MainWindow(QMainWindow):
             amount_item = QTableWidgetItem(f"{so_tien:,.0f} ₫")
             amount_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             self.order_table.setItem(idx, 4, amount_item)
-            from app_styles import ThemeManager
-            theme = ThemeManager.get_active_theme()
             self.order_table.item(idx, 4).setForeground(QColor(theme.SUCCESS)) # Chữ màu success theo theme cho tiền bạc dễ nhìn
             
             # Ghi chú
@@ -1545,34 +1485,15 @@ class MainWindow(QMainWindow):
             # Cột [Thao tác] (Sửa, Xóa)
             self.order_table.setCellWidget(idx, 9, self.create_action_buttons_for_order(row))
 
-        self.order_table.ApplyDataGridViewTheme()
-        for row_index in range(self.order_table.rowCount()):
-            status_item = self.order_table.item(row_index, 8)
-            if status_item and status_item.text() == "Đã hết hạn":
-                highlight_expired_status(status_item)
-
-        visible_start = start_index + 1 if self.all_orders else 0
-        visible_end = min(end_index, len(self.all_orders))
-        self.order_results_label.setText(
-            f"Hiển thị {visible_start}–{visible_end} trong {len(self.all_orders)} kết quả"
-        )
-        self.order_page_button.setText(str(self.order_current_page))
-        self.order_prev_button.setEnabled(self.order_current_page > 1)
-        self.order_next_button.setEnabled(self.order_current_page < total_pages)
+        self.order_table.refresh_cell_widget_styles()
+        self.order_table.setUpdatesEnabled(True)
+        vertical_bar.setValue(0 if scroll_to_top else min(previous_vertical, vertical_bar.maximum()))
+        horizontal_bar.setValue(min(previous_horizontal, horizontal_bar.maximum()))
+        self._apply_order_selection_highlights(force=True)
 
     def on_order_status_filter_changed(self, _index):
-        """Lọc đơn hàng ngay khi người dùng chọn trạng thái và về trang đầu."""
-        self.refresh_orders(reset_page=True)
-
-    def change_order_page(self, direction):
-        """Đổi trang sau khi dữ liệu đã được lọc và sắp xếp trong truy vấn."""
-        self.order_current_page += direction
-        self.refresh_orders()
-
-    def change_order_page_size(self, _index):
-        """Đổi số dòng mỗi trang và quay về trang đầu."""
-        self.order_rows_per_page = int(self.order_rows_combo.currentText().split()[0])
-        self.refresh_orders(reset_page=True)
+        """Lọc đơn hàng và đưa bảng về đầu danh sách kết quả."""
+        self.refresh_orders(scroll_to_top=True)
 
     def on_order_stt_click(self, row, modifiers=Qt.KeyboardModifier.NoModifier):
         if row < 0 or row >= len(self.current_orders):
@@ -1605,12 +1526,15 @@ class MainWindow(QMainWindow):
             
         self._apply_order_selection_highlights()
 
-    def _apply_order_selection_highlights(self):
+    def _apply_order_selection_highlights(self, force=False):
         highlighted = []
         for row, ord in enumerate(self.current_orders):
             if ord['id'] in self.selected_order_ids:
                 highlighted.append(row)
-        self.order_table.set_persistent_selected_rows(highlighted)
+        if force:
+            self.order_table.set_persistent_selected_rows(highlighted, force=True)
+        else:
+            self.order_table.set_persistent_selected_rows(highlighted)
 
     def ensure_order_row_selection(self, row):
         if row < 0 or row >= len(self.current_orders):
@@ -1714,7 +1638,7 @@ class MainWindow(QMainWindow):
             is_recent_filter = (
                 normalize_status_filter(self.order_filter_combo.currentText()) == "recent"
             )
-            self.refresh_orders(reset_page=is_recent_filter)
+            self.refresh_orders(scroll_to_top=is_recent_filter)
             self.refresh_charts()
 
     def on_edit_order_clicked(self, order_data):
@@ -2029,11 +1953,17 @@ class MainWindow(QMainWindow):
         chart_header.addWidget(self.chart_title_label)
         chart_header.addStretch()
         self.chart_month_combo = QComboBox()
-        self.chart_month_combo.setFixedWidth(170)
+        self.chart_month_combo.setFixedWidth(135)
         self.chart_month_combo.setStyleSheet(
             "QComboBox { color:#DDE3EA; background:#18202B; border:1px solid #354052; padding:6px 10px; }"
         )
         chart_header.addWidget(self.chart_month_combo)
+        self.chart_year_combo = QComboBox()
+        self.chart_year_combo.setFixedWidth(100)
+        self.chart_year_combo.setStyleSheet(
+            "QComboBox { color:#DDE3EA; background:#18202B; border:1px solid #354052; padding:6px 10px; }"
+        )
+        chart_header.addWidget(self.chart_year_combo)
         self.btn_export_chart = QPushButton("⇩  Xuất biểu đồ")
         self.btn_export_chart.setFixedWidth(130)
         self.btn_export_chart.setStyleSheet(
@@ -2044,14 +1974,9 @@ class MainWindow(QMainWindow):
         chart_header.addWidget(self.btn_export_chart)
         chart_layout.addLayout(chart_header)
 
-        today = QDate.currentDate()
-        for offset in range(12):
-            month_date = today.addMonths(-offset)
-            self.chart_month_combo.addItem(
-                f"Tháng {month_date.month():02d}/{month_date.year()}",
-                (month_date.year(), month_date.month())
-            )
+        self.refresh_chart_period_options(select_current=True)
         self.chart_month_combo.currentIndexChanged.connect(self.refresh_charts)
+        self.chart_year_combo.currentIndexChanged.connect(self.refresh_charts)
         
         # Canvas vẽ biểu đồ
         self.canvas = MplCanvas(self, width=6, height=4, dpi=100)
@@ -2179,10 +2104,41 @@ class MainWindow(QMainWindow):
         card_frame.val_label = val_label
         return card_frame
 
-    def refresh_charts(self):
+    def refresh_chart_period_options(self, select_current=False):
+        """Refresh separate month and year pickers without losing a selection."""
+        current_date = QDate.currentDate()
+        current_month = current_date.month()
+        current_year = current_date.year()
+        selected_month = self.chart_month_combo.currentData()
+        selected_year = self.chart_year_combo.currentData()
+
+        self.chart_month_combo.blockSignals(True)
+        self.chart_year_combo.blockSignals(True)
+        self.chart_month_combo.clear()
+        self.chart_year_combo.clear()
+        for month in database.build_month_options():
+            self.chart_month_combo.addItem(f"Tháng {month:02d}", month)
+        for year in database.build_year_options():
+            self.chart_year_combo.addItem(str(year), year)
+
+        target_month = current_month if select_current else selected_month
+        target_year = current_year if select_current else selected_year
+        month_index = self.chart_month_combo.findData(target_month)
+        year_index = self.chart_year_combo.findData(target_year)
+        self.chart_month_combo.setCurrentIndex(month_index if month_index >= 0 else 0)
+        self.chart_year_combo.setCurrentIndex(year_index if year_index >= 0 else 0)
+        self.chart_month_combo.blockSignals(False)
+        self.chart_year_combo.blockSignals(False)
+
+    def refresh_charts(self, _index=None, select_current=False):
         """Hàm kích hoạt tính toán SELECT thống kê và vẽ lại biểu đồ đường."""
+        # Recheck the local month on every dashboard refresh.  This also
+        # covers an app that stays open over a month boundary.
+        self.refresh_chart_period_options(select_current=select_current)
         # 1. Truy vấn các số liệu cho 4 thẻ thống kê từ Database
-        stats = database.get_dashboard_stats()
+        selected_month = self.chart_month_combo.currentData()
+        selected_year = self.chart_year_combo.currentData()
+        stats = database.get_dashboard_stats(selected_year, selected_month)
         
         self.card_total_orders.val_label.setText(f"{stats['total_orders']} đơn")
         self.card_active_warranty.val_label.setText(f"{stats['active_warranty']} đơn")
@@ -2190,9 +2146,7 @@ class MainWindow(QMainWindow):
         self.card_month_revenue.val_label.setText(f"{stats['month_revenue']:,.0f}đ")
         
         # 2. Truy vấn dữ liệu biểu đồ và vẽ lại đường biểu diễn
-        selected_period = self.chart_month_combo.currentData()
-        if selected_period:
-            selected_year, selected_month = selected_period
+        if selected_year and selected_month:
             chart_data = database.get_chart_data(selected_year, selected_month)
         else:
             chart_data = database.get_chart_data_current_month()

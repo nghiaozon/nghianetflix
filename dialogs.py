@@ -7,22 +7,27 @@ from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QTextEdit,
     QDateEdit, QPushButton, QComboBox, QTableWidget, QTableWidgetItem,
     QHeaderView, QMessageBox, QFormLayout, QWidget, QAbstractItemView, QMenu,
-    QListView, QStyledItemDelegate, QStyle, QStyleOptionViewItem, QToolTip
+    QListView, QStyledItemDelegate, QStyle, QStyleOptionViewItem, QToolTip,
+    QSizePolicy
 )
 from PySide6.QtCore import (
-    QDate, QEvent, Qt, QStringListModel, QTimer, QPoint, QItemSelectionModel,
+    QDate, QEvent, Qt, QStringListModel, QTimer, QPoint, QItemSelectionModel, QSize
 )
-from PySide6.QtGui import QBrush, QColor, QPalette, QKeySequence
+from PySide6.QtGui import QBrush, QColor, QPalette, QKeySequence, QFontMetrics, QIcon
 from PySide6.QtWidgets import QApplication
 from datetime import date, timedelta
 import database
-from runtime_paths import config_file
+from runtime_paths import config_file, resource_path
 
 
 class PersistentRowSelectionDelegate(QStyledItemDelegate):
     """Paint business-selected rows above hover without changing input behavior."""
 
     def paint(self, painter, option, index):
+        # Let Qt measure the actual font and the current cell rectangle.  This
+        # keeps the data in the model untouched while the view paints an
+        # ellipsis when a resized column is too narrow.
+        option.textElideMode = Qt.TextElideMode.ElideRight
         table = self.parent()
         if table is not None and index.row() in table._persistent_selected_rows:
             selected_option = QStyleOptionViewItem(option)
@@ -286,6 +291,10 @@ class CopyableTableWidget(QTableWidget):
         self._user_resized_columns = False
         self._applying_column_widths = False
         self._column_resize_signal_connected = False
+        self._column_resize_in_progress = False
+        self._column_widths_dirty = False
+        self._header_event_filter_installed = False
+        self._header_context_menu_connected = False
         self.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectItems)
         self.setMouseTracking(True)
@@ -297,9 +306,9 @@ class CopyableTableWidget(QTableWidget):
         """Enable Excel-like header resizing and restore persisted column widths.
 
         ``column_specs`` is an ordered sequence of dictionaries with ``key``,
-        ``width`` and ``min_width``.  Widths are stored independently for each
-        table in config/settings.json, leaving all data-cell mouse handling in
-        this widget untouched.
+        ``width`` and ``min_width``. Widths for the main screens are stored in
+        ``table_column_widths.accounts`` and ``table_column_widths.orders`` in
+        config/settings.json. Data-cell mouse handling remains untouched.
         """
         self._column_config_key = config_key
         self._column_specs = list(column_specs)
@@ -310,6 +319,9 @@ class CopyableTableWidget(QTableWidget):
         header = self.horizontalHeader()
         header.setStretchLastSection(False)
         header.setCascadingSectionResizes(False)
+        # Section-specific minimums are enforced in _on_column_resized. A
+        # large header-wide minimum would otherwise prevent small columns such
+        # as STT from shrinking.
         header.setMinimumSectionSize(min(spec["min_width"] for spec in self._column_specs))
         for column in range(len(self._column_specs)):
             header.setSectionResizeMode(column, QHeaderView.ResizeMode.Interactive)
@@ -321,6 +333,19 @@ class CopyableTableWidget(QTableWidget):
             header.sectionResized.disconnect(self._on_column_resized)
         header.sectionResized.connect(self._on_column_resized)
         self._column_resize_signal_connected = True
+        if not self._header_event_filter_installed:
+            header.installEventFilter(self)
+            header.viewport().installEventFilter(self)
+            self._header_event_filter_installed = True
+        if not self._header_context_menu_connected:
+            header.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+            header.customContextMenuRequested.connect(self._show_header_context_menu)
+            self._header_context_menu_connected = True
+
+        self.setTextElideMode(Qt.TextElideMode.ElideRight)
+        self.setWordWrap(False)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
 
     def _settings_path(self):
         return config_file("settings.json")
@@ -336,7 +361,17 @@ class CopyableTableWidget(QTableWidget):
     def _load_column_widths(self):
         if not self._column_config_key:
             return {}
-        widths = self._read_settings().get(self._column_config_key, {})
+        settings = self._read_settings()
+        if self._column_config_key in {"accounts", "orders"}:
+            saved_tables = settings.get("table_column_widths")
+            legacy_key = f"{'account' if self._column_config_key == 'accounts' else 'order'}_table_columns"
+            widths = (
+                saved_tables.get(self._column_config_key, settings.get(legacy_key, {}))
+                if isinstance(saved_tables, dict)
+                else settings.get(legacy_key, {})
+            )
+        else:
+            widths = settings.get(self._column_config_key, {})
         return widths if isinstance(widths, dict) else {}
 
     @staticmethod
@@ -373,16 +408,33 @@ class CopyableTableWidget(QTableWidget):
                 self._applying_column_widths = False
             new_width = clamped_width
         self._user_resized_columns = True
-        self._save_column_widths()
+        self._column_widths_dirty = True
+        # Native painting re-elides immediately; no cell widgets are rebuilt.
+        self.viewport().update()
+        # resizeSection() is also used by tests and internal callers. Those
+        # calls have no mouse release, so persist them immediately. Interactive
+        # header drags are persisted once in the header's release event.
+        if not self._column_resize_in_progress:
+            self._save_column_widths()
+            self._column_widths_dirty = False
 
     def _save_column_widths(self):
         if not self._column_config_key:
             return
         settings = self._read_settings()
-        settings[self._column_config_key] = {
+        widths = {
             spec["key"]: self.horizontalHeader().sectionSize(column)
             for column, spec in enumerate(self._column_specs)
         }
+        if self._column_config_key in {"accounts", "orders"}:
+            saved_tables = settings.get("table_column_widths")
+            if not isinstance(saved_tables, dict):
+                saved_tables = {}
+                settings["table_column_widths"] = saved_tables
+            saved_tables[self._column_config_key] = widths
+        else:
+            widths_key = self._column_config_key
+            settings[widths_key] = widths
         try:
             path = self._settings_path()
             os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -391,36 +443,19 @@ class CopyableTableWidget(QTableWidget):
         except OSError as error:
             print(f"Error saving table column widths: {error}")
 
-    def _expand_default_columns_to_available_width(self):
-        """Use surplus window width for the readable text columns before any drag."""
-        if (self._column_widths_loaded_from_config or self._user_resized_columns
-                or not self._column_specs):
-            return
-        available_width = self.viewport().width()
-        current_width = sum(self.horizontalHeader().sectionSize(i) for i in range(len(self._column_specs)))
-        extra_width = available_width - current_width
-        if extra_width <= 0:
-            return
-        weights = {"email": 4, "customer_name": 4, "note": 2}
-        active = [
-            (column, weights.get(spec["key"], 0))
-            for column, spec in enumerate(self._column_specs)
-            if weights.get(spec["key"], 0) > 0
-        ]
-        total_weight = sum(weight for _, weight in active)
-        if not total_weight:
-            return
-        self._applying_column_widths = True
-        try:
-            for column, weight in active:
-                current = self.horizontalHeader().sectionSize(column)
-                self.horizontalHeader().resizeSection(column, current + extra_width * weight // total_weight)
-        finally:
-            self._applying_column_widths = False
+    def reset_column_widths(self):
+        """Restore this table's safe defaults and persist the new preference."""
+        self._apply_column_widths()
+        self._column_widths_loaded_from_config = False
+        self._user_resized_columns = False
+        self._save_column_widths()
+        self.viewport().update()
 
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        self._expand_default_columns_to_available_width()
+    def _show_header_context_menu(self, position):
+        menu = QMenu(self)
+        reset_action = menu.addAction("Khôi phục chiều rộng cột mặc định")
+        if menu.exec(self.horizontalHeader().mapToGlobal(position)) is reset_action:
+            self.reset_column_widths()
 
     def set_row_action_callbacks(self, edit_callback=None, delete_callback=None):
         """Gắn hành động sửa/xóa cho menu chuột phải của từng bảng."""
@@ -448,10 +483,42 @@ class CopyableTableWidget(QTableWidget):
         self._update_stt_drag_callback = update_drag_callback
         self._end_stt_drag_callback = end_drag_callback
 
-    def set_persistent_selected_rows(self, rows):
+    def set_persistent_selected_rows(self, rows, force=False):
         """Highlight complete rows without disabling or covering cell widgets."""
-        self._persistent_selected_rows = set(rows)
-        self.ApplyDataGridViewTheme()
+        selected_rows = set(rows)
+        changed_rows = self._persistent_selected_rows.symmetric_difference(selected_rows)
+        if force:
+            changed_rows.update(self._persistent_selected_rows)
+            changed_rows.update(selected_rows)
+        self._persistent_selected_rows = selected_rows
+        if not changed_rows:
+            return
+
+        # Selection is updated repeatedly while the user Ctrl/Shift-clicks or
+        # drags through STT. Re-theming every item and widget in a 1,000-row
+        # table for each mouse move is needlessly expensive; repaint only rows
+        # whose persistent-selection state actually changed.
+        from app_styles import ThemeManager
+        theme = ThemeManager.get_active_theme()
+        dark = QColor(theme.TABLE_BACKGROUND)
+        alternate = QColor(theme.INPUT_BACKGROUND)
+        selected = self._selected_background_color(theme)
+        for row in changed_rows:
+            if not 0 <= row < self.rowCount():
+                continue
+            background = selected if row in selected_rows else (
+                alternate if row % 2 else dark
+            )
+            for column in range(self.columnCount()):
+                item = self.item(row, column)
+                if item is not None:
+                    item.setBackground(QBrush(background))
+        self._update_cell_widget_styles(changed_rows)
+        self.viewport().update()
+
+    def refresh_cell_widget_styles(self):
+        """Style newly created cell widgets without re-theming every item."""
+        self._update_cell_widget_styles()
 
     def clear_transient_state(self):
         """Clear native focus/hover state without invoking business callbacks."""
@@ -469,13 +536,23 @@ class CopyableTableWidget(QTableWidget):
             widget.installEventFilter(self)
 
     def eventFilter(self, watched, event):
+        if watched in (self.horizontalHeader(), self.horizontalHeader().viewport()):
+            if event.type() == QEvent.Type.MouseButtonPress:
+                self._column_resize_in_progress = True
+            elif event.type() == QEvent.Type.MouseButtonRelease:
+                if self._column_widths_dirty:
+                    self._save_column_widths()
+                    self._column_widths_dirty = False
+                self._column_resize_in_progress = False
         if watched is self.viewport() and event.type() == QEvent.Type.ToolTip:
             index = self.indexAt(event.pos())
             if index.isValid() and index.column() in self._tooltip_columns:
                 item = self.item(index.row(), index.column())
                 text = item.text() if item is not None else ""
-                # Table items have 10px padding on each side in the shared style.
-                is_truncated = self.fontMetrics().horizontalAdvance(text) > max(0, self.visualRect(index).width() - 20)
+                # Match the view's 8px left/right padding and measure using
+                # the font that Qt uses to paint the actual item.
+                item_font = item.font() if item is not None else self.font()
+                is_truncated = QFontMetrics(item_font).horizontalAdvance(text) > max(0, self.visualRect(index).width() - 16)
                 if text and is_truncated:
                     QToolTip.showText(event.globalPos(), text, self.viewport())
                 else:
@@ -507,10 +584,13 @@ class CopyableTableWidget(QTableWidget):
         self.viewport().update()
         self._update_cell_widget_styles()
 
-    def _update_cell_widget_styles(self):
+    def _update_cell_widget_styles(self, rows=None):
         from app_styles import ThemeManager
         theme = ThemeManager.get_active_theme()
-        for row in range(self.rowCount()):
+        target_rows = range(self.rowCount()) if rows is None else rows
+        for row in target_rows:
+            if not 0 <= row < self.rowCount():
+                continue
             if row in self._persistent_selected_rows:
                 background_css = theme.BUTTON_PRIMARY
                 border = theme.BORDER
@@ -573,7 +653,7 @@ class CopyableTableWidget(QTableWidget):
         self.setShowGrid(False)
         self.setWordWrap(False)
         self.verticalHeader().setVisible(False)
-        self.horizontalHeader().setMinimumSectionSize(80)
+        self.horizontalHeader().setMinimumSectionSize(1)
 
         # Explicitly colour all current cells (including cells underneath custom
         # button/badge widgets). Preserve deliberately coloured status text.
@@ -598,6 +678,11 @@ class CopyableTableWidget(QTableWidget):
         header_palette.setColor(QPalette.ColorRole.WindowText, header_foreground)
         self.horizontalHeader().setPalette(header_palette)
         self.verticalHeader().setPalette(header_palette)
+        # Do not overwrite section-specific minimums configured for the main
+        # tables. The resize handler applies each column's own minimum.
+        self.horizontalHeader().setMinimumSectionSize(
+            min((spec["min_width"] for spec in self._column_specs), default=1)
+        )
 
     def keyPressEvent(self, event):
         """Xử lý phím Ctrl+C để copy dữ liệu bảng."""
@@ -1201,7 +1286,6 @@ class OrderDialog(QDialog):
 
         purchase_str = purchase_qdate.toString("yyyy-MM-dd")
         expiry_str = expiry_qdate.toString("yyyy-MM-dd")
-            
         try:
             # Làm sạch định dạng tiền trước khi parse (ví dụ xóa "đ", "VND", chấm, phẩy...)
             clean_amount = amount_str.replace("đ", "").replace("VND", "").replace("vnd", "").replace(".", "").replace(",", "").strip()
@@ -1228,11 +1312,60 @@ class OrderDialog(QDialog):
             QMessageBox.critical(self, "Thất Bại", msg)
 
 
+def create_restore_button(on_click_callback=None, parent=None):
+    """Tạo nút icon Khôi phục (dùng chung cho Thùng Rác Tài Khoản & Đơn Hàng)."""
+    btn = QPushButton("", parent)
+    btn.setToolTip("Khôi phục")
+    btn.setIcon(QIcon(resource_path("assets/restore.svg")))
+    btn.setIconSize(QSize(16, 16))
+    btn.setFixedSize(34, 32)
+    btn.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+    btn.setProperty("class", "RestoreButton")
+    btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    if on_click_callback:
+        btn.clicked.connect(on_click_callback)
+    return btn
+
+
+def create_permanent_delete_button(on_click_callback=None, parent=None):
+    """Tạo nút icon Xóa vĩnh viễn (dùng chung cho Thùng Rác Tài Khoản & Đơn Hàng)."""
+    btn = QPushButton("", parent)
+    btn.setToolTip("Xóa vĩnh viễn")
+    btn.setIcon(QIcon(resource_path("assets/trash.svg")))
+    btn.setIconSize(QSize(16, 16))
+    btn.setFixedSize(34, 32)
+    btn.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+    btn.setProperty("class", "DeletePermanentButton")
+    btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    if on_click_callback:
+        btn.clicked.connect(on_click_callback)
+    return btn
+
+
+def create_trash_action_widget(item_id, on_restore_cb, on_delete_cb):
+    """Tạo cụm nút icon Thao tác (Khôi phục & Xóa vĩnh viễn) cho Thùng Rác."""
+    widget = QWidget()
+    widget.setObjectName("TrashActionCell")
+    layout = QHBoxLayout(widget)
+    layout.setContentsMargins(4, 3, 4, 3)
+    layout.setSpacing(8)
+    layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    widget.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
+    widget.setFixedWidth(92)
+
+    restore_btn = create_restore_button(lambda: on_restore_cb(item_id))
+    delete_btn = create_permanent_delete_button(lambda: on_delete_cb(item_id))
+
+    layout.addWidget(restore_btn)
+    layout.addWidget(delete_btn)
+    return widget
+
+
 class TrashBinDialog(QDialog):
     """Hộp thoại Thùng rác chứa Tài khoản và Đơn hàng đã xóa."""
-    ACTION_COLUMN_WIDTH = 260
-    ACTION_ROW_HEIGHT = 52
-    ACTION_BUTTON_HEIGHT = 36
+    ACTION_COLUMN_WIDTH = 110
+    ACTION_ROW_HEIGHT = 48
+    ACTION_BUTTON_HEIGHT = 32
 
     def __init__(self, parent=None, is_account_mode=True):
         super().__init__(parent)
@@ -1278,6 +1411,7 @@ class TrashBinDialog(QDialog):
         # Co dãn cột
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        header.setMinimumSectionSize(95)
         if self.is_account_mode:
             header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         else:
@@ -1286,7 +1420,7 @@ class TrashBinDialog(QDialog):
 
         # Cột thao tác luôn đủ chỗ cho hai nút và không bị co khi dialog đổi cỡ.
         action_column = len(self.headers) - 1
-        header.setSectionResizeMode(action_column, QHeaderView.ResizeMode.Fixed)
+        header.setSectionResizeMode(action_column, QHeaderView.ResizeMode.Interactive)
         self.table.setColumnWidth(action_column, self.ACTION_COLUMN_WIDTH)
         self.table.verticalHeader().setMinimumSectionSize(self.ACTION_ROW_HEIGHT)
         self.table.verticalHeader().setDefaultSectionSize(self.ACTION_ROW_HEIGHT)
@@ -1356,29 +1490,20 @@ class TrashBinDialog(QDialog):
         self.table.ApplyDataGridViewTheme()
 
     def create_action_widget(self, item_id):
-        """Tạo cột Thao tác chứa 2 nút: Khôi phục & Xóa vĩnh viễn."""
-        widget = QWidget()
-        widget.setObjectName("TrashActionCell")
-        layout = QHBoxLayout(widget)
-        layout.setContentsMargins(1, 0, 1, 0)
-        layout.setSpacing(8)
-        layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        
-        # Nút Khôi phục
-        restore_btn = QPushButton("↩ Khôi phục")
-        restore_btn.setFixedSize(102, self.ACTION_BUTTON_HEIGHT)
-        restore_btn.setProperty("class", "RestoreButton")
-        restore_btn.clicked.connect(lambda: self.on_restore(item_id))
-        
-        # Nút Xóa vĩnh viễn
-        delete_btn = QPushButton("🗑 Xóa vĩnh viễn")
-        delete_btn.setFixedSize(138, self.ACTION_BUTTON_HEIGHT)
-        delete_btn.setProperty("class", "DeletePermanentButton")
-        delete_btn.clicked.connect(lambda: self.on_delete_permanent(item_id))
-        
-        layout.addWidget(restore_btn)
-        layout.addWidget(delete_btn)
-        return widget
+        """Tạo cột Thao tác chứa 2 nút icon: Khôi phục & Xóa vĩnh viễn."""
+        return create_trash_action_widget(
+            item_id,
+            on_restore_cb=self.on_restore,
+            on_delete_cb=self.on_delete_permanent
+        )
+
+
+    def _refresh_order_dashboard(self):
+        """Refresh historical order aggregates immediately after trash actions."""
+        parent = self.parent()
+        refresh_charts = getattr(parent, "refresh_charts", None)
+        if callable(refresh_charts):
+            refresh_charts()
 
     def on_restore(self, item_id):
         """Logic khôi phục."""
@@ -1388,6 +1513,9 @@ class TrashBinDialog(QDialog):
                 self.refresh_table()
         else:
             if database.restore_order(item_id):
+                # Restore only changes visibility; the order was already
+                # counted while in the trash.
+                self._refresh_order_dashboard()
                 QMessageBox.information(self, "Thành Công", "Đã khôi phục đơn hàng thành công!")
                 self.refresh_table()
 
@@ -1407,5 +1535,8 @@ class TrashBinDialog(QDialog):
                     self.refresh_table()
             else:
                 if database.delete_order_permanently(item_id):
+                    # The underlying row is gone, so its amounts must leave
+                    # all dashboard aggregates immediately.
+                    self._refresh_order_dashboard()
                     QMessageBox.information(self, "Thành Công", "Đã xóa vĩnh viễn đơn hàng!")
                     self.refresh_table()

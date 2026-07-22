@@ -1,5 +1,5 @@
 import sqlite3
-from datetime import datetime
+from datetime import date, datetime
 from runtime_paths import config_file, data_file
 from expiry_status import (
     STATUS_ACTIVE,
@@ -553,6 +553,30 @@ def get_active_order_count_for_email(email):
     return row['cnt'] if row else 0
 
 
+def get_active_order_counts_for_emails(emails):
+    """Lấy số đơn còn hiệu lực theo email trong một truy vấn duy nhất."""
+    unique_emails = sorted({email for email in emails if email})
+    if not unique_emails:
+        return {}
+
+    placeholders = ", ".join("?" for _ in unique_emails)
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            f"""
+            SELECT email_tai_khoan, COUNT(*) AS cnt
+            FROM don_hang
+            WHERE da_xoa = 0 AND email_tai_khoan IN ({placeholders})
+            GROUP BY email_tai_khoan
+            """,
+            unique_emails,
+        )
+        return {row['email_tai_khoan']: row['cnt'] for row in cursor.fetchall()}
+    finally:
+        conn.close()
+
+
 # --- CÁC HÀM XỬ LÝ CHO BẢNG ĐƠN HÀNG (don_hang) ---
 
 def add_order(email_tai_khoan, nen_tang, ten_khach_hang, so_tien, ngay_mua, ngay_het_han, ghi_chu=""):
@@ -843,24 +867,113 @@ def get_platforms():
 
 # --- CÁC HÀM THỐNG KÊ (DASHBOARD ANALYTICS) ---
 
-def get_dashboard_stats():
+def build_month_options():
+    """Return every calendar month for the dashboard month picker."""
+    return list(range(1, 13))
+
+
+def build_year_options(current_date=None, years_before=2, years_after=1):
+    """Return practical dashboard years, newest first.
+
+    The range around the local year keeps the picker useful for future and
+    prior periods without being unbounded. Years that exist in order history
+    are always retained, including soft-deleted orders.
     """
+    current_date = current_date or date.today()
+    if isinstance(current_date, datetime):
+        current_date = current_date.date()
+
+    years = set(
+        range(current_date.year - years_before, current_date.year + years_after + 1)
+    )
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT ngay_mua FROM don_hang")
+        for row in cursor.fetchall():
+            raw_date = row["ngay_mua"]
+            if raw_date is None:
+                continue
+            try:
+                years.add(date.fromisoformat(str(raw_date)[:10]).year)
+            except ValueError:
+                # Legacy invalid dates must not prevent the picker rendering.
+                continue
+    finally:
+        conn.close()
+
+    return sorted(years, reverse=True)
+
+
+def build_available_months(current_date=None, months_before=12, months_after=12):
+    """Return chart periods as ``(year, month)`` tuples, newest first.
+
+    The picker includes a continuous 12-month range before and after the local
+    month, so users can inspect past and future periods even without orders.
+    Existing order months outside that range are included too.  This is
+    deliberately not filtered by ``da_xoa`` because soft-deleted orders remain
+    part of dashboard analytics until they are permanently deleted.
+
+    ``current_date`` is injectable so the rollover behavior can be tested
+    without changing the operating system clock.
+    """
+    current_date = current_date or date.today()
+    if isinstance(current_date, datetime):
+        current_date = current_date.date()
+
+    current_month_index = current_date.year * 12 + current_date.month - 1
+    available_months = set()
+    for offset in range(-months_before, months_after + 1):
+        year, zero_based_month = divmod(current_month_index + offset, 12)
+        available_months.add((year, zero_based_month + 1))
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT ngay_mua FROM don_hang")
+        for row in cursor.fetchall():
+            raw_date = row["ngay_mua"]
+            if raw_date is None:
+                continue
+            try:
+                purchase_date = date.fromisoformat(str(raw_date)[:10])
+            except ValueError:
+                # Keep legacy malformed dates from breaking the Dashboard.
+                continue
+            available_months.add((purchase_date.year, purchase_date.month))
+    finally:
+        conn.close()
+
+    return sorted(available_months, reverse=True)
+
+def get_dashboard_stats(year=None, month=None):
+    """
+    Dashboard là lịch sử nghiệp vụ: đơn xóa mềm trong Thùng rác vẫn được
+    tính; chỉ DELETE vĩnh viễn mới làm bản ghi biến mất khỏi thống kê.
+
     Tính toán các số liệu thống kê cho Dashboard:
-    1. Tổng số đơn hàng (da_xoa = 0)
-    2. Đơn hàng còn bảo hành (da_xoa = 0 và ngay_het_han >= hôm nay)
-    3. Tổng doanh thu (tổng so_tien của các đơn da_xoa = 0)
+    1. Tổng số đơn hàng, bao gồm đơn trong Thùng rác
+    2. Đơn hàng còn bảo hành, bao gồm đơn trong Thùng rác
+    3. Tổng doanh thu của tất cả bản ghi đơn hàng còn tồn tại
     4. Doanh thu tháng hiện tại
     """
     conn = get_connection()
     cursor = conn.cursor()
-    current_month_prefix = datetime.now().strftime("%Y-%m-") + "%"  # e.g. '2026-07-%'
+    now = datetime.now()
+    has_selected_period = year is not None and month is not None
+    selected_year = int(year or now.year)
+    selected_month = int(month or now.month)
+    month_prefix = f"{selected_year:04d}-{selected_month:02d}-%"
+    period_clause = " WHERE ngay_mua LIKE ?" if has_selected_period else ""
+    period_params = (month_prefix,) if has_selected_period else ()
     
     # 1. Tổng đơn hàng
-    cursor.execute("SELECT COUNT(*) FROM don_hang WHERE da_xoa = 0")
+    # Dashboard is historical: records in the trash remain included. Only a
+    # permanent DELETE removes an order from these aggregates.
+    cursor.execute("SELECT COUNT(*) FROM don_hang" + period_clause, period_params)
     total_orders = cursor.fetchone()[0] or 0
     
     # 2. Đơn hàng còn bảo hành
-    cursor.execute("SELECT ngay_het_han FROM don_hang WHERE da_xoa = 0")
+    cursor.execute("SELECT ngay_het_han FROM don_hang" + period_clause, period_params)
     today = local_today()
     active_warranty = sum(
         get_status_from_expiry(row['ngay_het_han'], today=today) == STATUS_ACTIVE
@@ -868,11 +981,11 @@ def get_dashboard_stats():
     )
     
     # 3. Tổng doanh thu
-    cursor.execute("SELECT SUM(so_tien) FROM don_hang WHERE da_xoa = 0")
+    cursor.execute("SELECT SUM(so_tien) FROM don_hang" + period_clause, period_params)
     total_revenue = cursor.fetchone()[0] or 0.0
     
     # 4. Doanh thu tháng
-    cursor.execute("SELECT SUM(so_tien) FROM don_hang WHERE da_xoa = 0 AND ngay_mua LIKE ?", (current_month_prefix,))
+    cursor.execute("SELECT SUM(so_tien) FROM don_hang WHERE ngay_mua LIKE ?", (month_prefix,))
     month_revenue = cursor.fetchone()[0] or 0.0
     
     conn.close()
@@ -909,7 +1022,8 @@ def get_chart_data(year=None, month=None):
     cursor.execute("""
         SELECT strftime('%d', ngay_mua) as day, SUM(so_tien) as total_rev, COUNT(*) as num_ord
         FROM don_hang
-        WHERE da_xoa = 0 AND ngay_mua LIKE ?
+        -- Soft-deleted orders remain part of the business history.
+        WHERE ngay_mua LIKE ?
         GROUP BY day
     """, (month_prefix,))
     

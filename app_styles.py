@@ -308,7 +308,7 @@ QTableWidget {
     selection-background-color: {BUTTON_PRIMARY_HOVER};
     selection-color: #FFFFFF;
 }
-QTableWidget::item { padding: 0 10px; border-bottom: 1px solid {BORDER}; }
+QTableWidget::item { padding: 0 8px; border-bottom: 1px solid {BORDER}; }
 QTableWidget::item:hover { background-color: {TABLE_ROW_HOVER}; }
 QTableWidget::item:selected { background-color: {BUTTON_PRIMARY}; color: #FFFFFF; }
 QHeaderView::section {
@@ -317,7 +317,7 @@ QHeaderView::section {
     border: 0;
     border-right: 1px solid {BORDER};
     border-bottom: 1px solid {BORDER};
-    padding: 12px 10px;
+    padding: 9px 8px;
     font-weight: 700;
 }
 QTableCornerButton::section { background: {TABLE_HEADER}; border: 0; }
@@ -327,8 +327,6 @@ QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
 QScrollBar:horizontal { background: transparent; height: 10px; margin: 3px; }
 QScrollBar::handle:horizontal { background: {BORDER}; min-width: 28px; border-radius: 5px; }
 QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0; }
-#PaginationLabel { color: {TEXT_SECONDARY}; font-size: 11px; }
-
 /* Dialogs */
 QDialog { background-color: {BACKGROUND}; }
 QDialog QLabel { background: transparent; color: {TEXT_PRIMARY}; font-weight: 600; }
@@ -346,30 +344,32 @@ QLabel.DialogTitle {
 
 /* Trash dialog buttons */
 QPushButton.RestoreButton {
-    background-color: {BADGE_ACTIVE};
-    color: {SUCCESS};
-    border: 1px solid {SUCCESS};
-    border-radius: 7px;
+    min-height: 32px; max-height: 32px; min-width: 34px; max-width: 34px;
     padding: 0;
-    font-size: 9px;
-    font-weight: 600;
-    min-height: 36px;
-    max-height: 36px;
+    background-color: {BADGE_ACTIVE};
+    border: 1px solid {SUCCESS};
+    border-radius: 8px;
+    color: {SUCCESS};
 }
-QPushButton.RestoreButton:hover { background-color: {SUCCESS}; border-color: {BORDER}; color: #FFFFFF; }
+QPushButton.RestoreButton:hover {
+    background-color: {SUCCESS};
+    border-color: {SUCCESS};
+    color: #FFFFFF;
+}
 
 QPushButton.DeletePermanentButton {
-    background-color: {BADGE_EXPIRED};
-    color: {ERROR};
-    border: 1px solid {ERROR};
-    border-radius: 7px;
+    min-height: 32px; max-height: 32px; min-width: 34px; max-width: 34px;
     padding: 0;
-    font-size: 9px;
-    font-weight: 600;
-    min-height: 36px;
-    max-height: 36px;
+    background-color: {BADGE_EXPIRED};
+    border: 1px solid {ERROR};
+    border-radius: 8px;
+    color: {ERROR};
 }
-QPushButton.DeletePermanentButton:hover { background-color: {ERROR}; border-color: {BORDER}; color: #FFFFFF; }
+QPushButton.DeletePermanentButton:hover {
+    background-color: {ERROR};
+    border-color: {ERROR};
+    color: #FFFFFF;
+}
 
 /* Settings page custom styles */
 QFrame.ThemeOptionCard {

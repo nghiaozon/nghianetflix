@@ -22,19 +22,19 @@ class StatusFilterTests(unittest.TestCase):
         self.assertEqual(ORDER_DATABASE_FILTER_MAP["active"], "Đang hoạt động")
         self.assertEqual(ORDER_DATABASE_FILTER_MAP["recent"], "Đơn hàng gần đây")
 
-    def test_account_selection_refreshes_once_and_resets_pagination(self):
+    def test_account_selection_refreshes_once_and_scrolls_to_result_start(self):
         window = Mock()
 
         MainWindow.on_account_status_filter_changed(window, 1)
 
-        window.refresh_accounts.assert_called_once_with(reset_page=True)
+        window.refresh_accounts.assert_called_once_with(scroll_to_top=True)
 
-    def test_order_selection_refreshes_once_and_resets_pagination(self):
+    def test_order_selection_refreshes_once_and_scrolls_to_result_start(self):
         window = Mock()
 
         MainWindow.on_order_status_filter_changed(window, 2)
 
-        window.refresh_orders.assert_called_once_with(reset_page=True)
+        window.refresh_orders.assert_called_once_with(scroll_to_top=True)
 
     def test_account_search_and_status_are_sent_in_the_same_query(self):
         window = Mock()

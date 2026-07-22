@@ -8,6 +8,7 @@ a = Analysis(
         ("assets/app.ico", "assets"),
         ("assets/edit.svg", "assets"),
         ("assets/trash.svg", "assets"),
+        ("assets/restore.svg", "assets"),
     ],
     hiddenimports=[],
     hookspath=[],
