@@ -93,12 +93,20 @@ class ThemeManager:
         cls._active_theme_name = theme_name
         cls._load_module()
         
-        # Save to config/settings.json
+        # Save the theme without discarding other user preferences, such as
+        # independently persisted table-column widths.
         config_path = config_file("settings.json")
         try:
+            data = {}
+            if os.path.exists(config_path):
+                with open(config_path, "r", encoding="utf-8") as f:
+                    loaded = json.load(f)
+                    if isinstance(loaded, dict):
+                        data = loaded
+            data["theme"] = theme_name
             os.makedirs(os.path.dirname(config_path), exist_ok=True)
             with open(config_path, "w", encoding="utf-8") as f:
-                json.dump({"theme": theme_name}, f, indent=2, ensure_ascii=False)
+                json.dump(data, f, indent=2, ensure_ascii=False)
             return True
         except Exception as e:
             print(f"Error saving theme config: {e}")

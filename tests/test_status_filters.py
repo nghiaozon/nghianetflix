@@ -17,8 +17,10 @@ class StatusFilterTests(unittest.TestCase):
         self.assertEqual(normalize_status_filter("Tất cả"), "all")
         self.assertEqual(normalize_status_filter("Đang hoạt động"), "active")
         self.assertEqual(normalize_status_filter("Đã hết hạn"), "expired")
+        self.assertEqual(normalize_status_filter("Đơn hàng gần đây"), "recent")
         self.assertEqual(ACCOUNT_DATABASE_FILTER_MAP["active"], "Đang hoạt động")
-        self.assertEqual(ORDER_DATABASE_FILTER_MAP["active"], "Đơn hàng mới nhất")
+        self.assertEqual(ORDER_DATABASE_FILTER_MAP["active"], "Đang hoạt động")
+        self.assertEqual(ORDER_DATABASE_FILTER_MAP["recent"], "Đơn hàng gần đây")
 
     def test_account_selection_refreshes_once_and_resets_pagination(self):
         window = Mock()

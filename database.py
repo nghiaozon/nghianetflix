@@ -1,6 +1,13 @@
 import sqlite3
 from datetime import datetime
 from runtime_paths import config_file, data_file
+from expiry_status import (
+    STATUS_ACTIVE,
+    STATUS_EXPIRED,
+    expiry_sort_key,
+    get_status_from_expiry,
+    local_today,
+)
 
 # Cấu hình Google Sheets
 try:
@@ -10,6 +17,23 @@ except ImportError:
     pass
 
 DB_FILE = data_file("netflix_manager.db")
+
+# Valid deletion timestamps are newest first.  NULL, blank, or malformed
+# legacy values are intentionally placed after timestamped records, with id
+# descending as the stable tie-breaker.
+TRASH_ORDER_BY = """
+    CASE WHEN datetime(deleted_at) IS NULL THEN 1 ELSE 0 END ASC,
+    datetime(deleted_at) DESC,
+    id DESC
+"""
+
+# Creation timestamps are preferred, but legacy rows can legitimately have no
+# timestamp. Keep those rows usable and fall back to their insertion id.
+ACCOUNT_EMAIL_ORDER_BY = """
+    CASE WHEN datetime(created_at) IS NULL THEN 1 ELSE 0 END ASC,
+    datetime(created_at) DESC,
+    id DESC
+"""
 
 # Global variable cho Google Sheets Service
 gs_service = None
@@ -32,6 +56,52 @@ def get_connection():
     conn.row_factory = sqlite3.Row
     return conn
 
+
+def _ensure_deleted_at_column(cursor, table_name):
+    """Add the soft-delete timestamp column to legacy tables when needed."""
+    columns = {
+        row[1] for row in cursor.execute(f"PRAGMA table_info({table_name})")
+    }
+    if "deleted_at" not in columns:
+        cursor.execute(f"ALTER TABLE {table_name} ADD COLUMN deleted_at TIMESTAMP")
+
+
+def _ensure_account_created_at_column(cursor):
+    """Add and backfill account creation time without changing existing data."""
+    columns = {
+        row[1] for row in cursor.execute("PRAGMA table_info(tai_khoan)")
+    }
+    if "created_at" not in columns:
+        # SQLite cannot add a column with CURRENT_TIMESTAMP as its default on a
+        # populated table. New rows receive their timestamp explicitly in
+        # add_account(), while old rows retain a safe id-based fallback.
+        cursor.execute("ALTER TABLE tai_khoan ADD COLUMN created_at TIMESTAMP")
+        columns.add("created_at")
+
+    # Some installations may already expose a legacy creation-time column.
+    # Preserve it in the common created_at field so all email queries use one
+    # ordering rule. Values that cannot be parsed remain harmless: the query
+    # below places them with other legacy rows and uses id DESC.
+    legacy_columns = [
+        column for column in ("created_time", "inserted_at") if column in columns
+    ]
+    if legacy_columns:
+        timestamp_values = ", ".join(
+            "COALESCE(STRFTIME('%Y-%m-%d %H:%M:%S', {0}), "
+            "NULLIF(TRIM({0}), ''))".format(column)
+            for column in legacy_columns
+        )
+        source_expression = (
+            f"COALESCE({timestamp_values})"
+            if len(legacy_columns) > 1 else timestamp_values
+        )
+        cursor.execute(f"""
+            UPDATE tai_khoan
+            SET created_at = {source_expression}
+            WHERE created_at IS NULL OR TRIM(created_at) = ''
+        """)
+
+
 def init_db():
     """Khởi tạo cấu trúc cơ sở dữ liệu nếu chưa tồn tại."""
     conn = get_connection()
@@ -49,7 +119,9 @@ def init_db():
         thong_bao VARCHAR DEFAULT '0/1',
         ngay_het_han DATE NOT NULL,
         trang_thai VARCHAR DEFAULT 'Đang hoạt động',
-        nguon VARCHAR DEFAULT 'Khách hàng'
+        nguon VARCHAR DEFAULT 'Khách hàng',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        deleted_at TIMESTAMP
     )
     """)
     
@@ -67,21 +139,55 @@ def init_db():
         ngay_mua DATE NOT NULL DEFAULT CURRENT_DATE,
         ngay_het_han DATE,
         ngay_tao TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         da_xoa INTEGER DEFAULT 0,
+        deleted_at TIMESTAMP,
         FOREIGN KEY (email_tai_khoan) REFERENCES tai_khoan(email)
     )
     """)
 
     # Migration for databases created before purchase dates were stored separately.
+    _ensure_deleted_at_column(cursor, "tai_khoan")
+    _ensure_account_created_at_column(cursor)
+    _ensure_deleted_at_column(cursor, "don_hang")
     cursor.execute("PRAGMA table_info(don_hang)")
     order_columns = {row[1] for row in cursor.fetchall()}
     if "ngay_mua" not in order_columns:
         cursor.execute("ALTER TABLE don_hang ADD COLUMN ngay_mua DATE")
+    if "created_at" not in order_columns:
+        # SQLite cannot add a column with CURRENT_TIMESTAMP as its default on
+        # an existing table. Add it without a default, then preserve the best
+        # available legacy creation timestamp below.
+        cursor.execute("ALTER TABLE don_hang ADD COLUMN created_at TIMESTAMP")
     cursor.execute("""
         UPDATE don_hang
         SET ngay_mua = COALESCE(NULLIF(DATE(ngay_tao), ''), DATE('now'))
         WHERE ngay_mua IS NULL OR TRIM(ngay_mua) = ''
     """)
+    if "ngay_tao" in order_columns:
+        cursor.execute("""
+            UPDATE don_hang
+            SET created_at = COALESCE(
+                STRFTIME('%Y-%m-%d %H:%M:%S', ngay_tao),
+                NULLIF(TRIM(ngay_tao), '')
+            )
+            WHERE created_at IS NULL OR TRIM(created_at) = ''
+        """)
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_don_hang_created_at ON don_hang(created_at)"
+    )
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_tai_khoan_created_at "
+        "ON tai_khoan(created_at DESC, id DESC)"
+    )
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_tai_khoan_trash_deleted_at "
+        "ON tai_khoan(deleted_at DESC, id DESC)"
+    )
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_don_hang_trash_deleted_at "
+        "ON don_hang(deleted_at DESC, id DESC)"
+    )
     
     conn.commit()
     
@@ -130,9 +236,15 @@ def seed_mock_data(cursor):
     for email, plat, cust, price, exp, note, notify_count, day_offset in orders:
         order_date = (today - timedelta(days=day_offset)).strftime("%Y-%m-%d %H:%M:%S")
         cursor.execute("""
-        INSERT INTO don_hang (email_tai_khoan, nen_tang, ten_khach_hang, so_tien, ngay_mua, ngay_het_han, ghi_chu, so_lan_thong_bao, ngay_tao, da_xoa)
-        VALUES (?, ?, ?, ?, DATE(?), ?, ?, ?, ?, 0)
-        """, (email, plat, cust, price, order_date, exp, note, notify_count, order_date))
+        INSERT INTO don_hang (
+            email_tai_khoan, nen_tang, ten_khach_hang, so_tien, ngay_mua,
+            ngay_het_han, ghi_chu, so_lan_thong_bao, ngay_tao, created_at, da_xoa
+        )
+        VALUES (?, ?, ?, ?, DATE(?), ?, ?, ?, ?, ?, 0)
+        """, (
+            email, plat, cust, price, order_date, exp, note, notify_count,
+            order_date, order_date,
+        ))
 
 # --- CÁC HÀM XỬ LÝ CHO BẢNG TÀI KHOẢN (tai_khoan) ---
 
@@ -142,9 +254,15 @@ def add_account(email, password, ngay_het_han, lien_ket="", ghi_chu="", nguon="K
     cursor = conn.cursor()
     try:
         cursor.execute("""
-        INSERT INTO tai_khoan (email, mat_khau, ngay_het_han, lien_ket, ghi_chu, nguon, thong_bao, trang_thai)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 'Đang hoạt động')
-        """, (email, password, ngay_het_han, lien_ket, ghi_chu, nguon, thong_bao))
+        INSERT INTO tai_khoan (
+            email, mat_khau, ngay_het_han, lien_ket, ghi_chu, nguon,
+            thong_bao, trang_thai, created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        """, (
+            email, password, ngay_het_han, lien_ket, ghi_chu, nguon,
+            thong_bao, get_status_from_expiry(ngay_het_han),
+        ))
         conn.commit()
         return True, "Thêm tài khoản thành công!"
     except sqlite3.IntegrityError:
@@ -163,7 +281,14 @@ def update_account(acc_id, email, password, ngay_het_han, lien_ket="", ghi_chu="
         UPDATE tai_khoan
         SET email = ?, mat_khau = ?, ngay_het_han = ?, lien_ket = ?, ghi_chu = ?, nguon = ?, thong_bao = ?, trang_thai = ?
         WHERE id = ?
-        """, (email, password, ngay_het_han, lien_ket, ghi_chu, nguon, thong_bao, trang_thai, acc_id))
+        """, (
+            email, password, ngay_het_han, lien_ket, ghi_chu, nguon,
+            thong_bao,
+            # Expiry status is derived; callers cannot accidentally preserve
+            # a stale "Đang hoạt động" value when editing on expiry day.
+            get_status_from_expiry(ngay_het_han),
+            acc_id,
+        ))
         conn.commit()
         return True, "Cập nhật tài khoản thành công!"
     except sqlite3.IntegrityError:
@@ -175,22 +300,22 @@ def update_account(acc_id, email, password, ngay_het_han, lien_ket="", ghi_chu="
 
 def sync_account_status_by_expire_date():
     """Cập nhật trạng thái tài khoản tự động dựa trên ngày hết hạn."""
-    today_str = datetime.now().date().strftime("%Y-%m-%d")
     conn = get_connection()
     cursor = conn.cursor()
     try:
-        cursor.execute("""
-        UPDATE tai_khoan
-        SET trang_thai = 'Đã hết hạn'
-        WHERE trang_thai != 'Đã xóa'
-          AND DATE(ngay_het_han) < DATE(?)
-        """, (today_str,))
-        cursor.execute("""
-        UPDATE tai_khoan
-        SET trang_thai = 'Đang hoạt động'
-        WHERE trang_thai != 'Đã xóa'
-          AND DATE(ngay_het_han) >= DATE(?)
-        """, (today_str,))
+        # Do not compare SQLite text values.  The shared parser also accepts
+        # legacy dd/MM/yyyy data and sends invalid values to a safe state.
+        today = local_today()
+        rows = cursor.execute(
+            "SELECT id, ngay_het_han FROM tai_khoan WHERE trang_thai != 'Đã xóa'"
+        ).fetchall()
+        cursor.executemany(
+            "UPDATE tai_khoan SET trang_thai = ? WHERE id = ?",
+            [
+                (get_status_from_expiry(row["ngay_het_han"], today=today), row["id"])
+                for row in rows
+            ],
+        )
         conn.commit()
     except Exception as e:
         print(f"Lỗi cập nhật trạng thái tài khoản tự động: {e}")
@@ -203,9 +328,10 @@ def delete_account_soft(acc_id):
     conn = get_connection()
     cursor = conn.cursor()
     try:
+        _ensure_deleted_at_column(cursor, "tai_khoan")
         cursor.execute("""
         UPDATE tai_khoan
-        SET trang_thai = 'Đã xóa'
+        SET trang_thai = 'Đã xóa', deleted_at = CURRENT_TIMESTAMP
         WHERE id = ?
         """, (acc_id,))
         conn.commit()
@@ -225,9 +351,11 @@ def delete_accounts_soft_bulk(account_ids):
     conn = get_connection()
     cursor = conn.cursor()
     try:
+        _ensure_deleted_at_column(cursor, "tai_khoan")
         placeholders = ",".join("?" for _ in account_ids)
         cursor.execute(
-            f"UPDATE tai_khoan SET trang_thai = 'Đã xóa' WHERE id IN ({placeholders})",
+            f"UPDATE tai_khoan SET trang_thai = 'Đã xóa', "
+            f"deleted_at = CURRENT_TIMESTAMP WHERE id IN ({placeholders})",
             account_ids,
         )
         conn.commit()
@@ -258,6 +386,7 @@ def restore_account(acc_id):
     conn = get_connection()
     cursor = conn.cursor()
     try:
+        _ensure_deleted_at_column(cursor, "tai_khoan")
         # Kiểm tra xem tài khoản đã từng có mã đơn hàng hay chưa để khôi phục trạng thái phù hợp
         cursor.execute("SELECT ma_don_hang FROM tai_khoan WHERE id = ?", (acc_id,))
         row = cursor.fetchone()
@@ -267,7 +396,7 @@ def restore_account(acc_id):
             
         cursor.execute("""
         UPDATE tai_khoan
-        SET trang_thai = ?
+        SET trang_thai = ?, deleted_at = NULL
         WHERE id = ?
         """, (trang_thai, acc_id))
         conn.commit()
@@ -296,25 +425,29 @@ def get_accounts(search_query="", filter_status="Tất cả"):
         query += " AND email LIKE ?"
         params.append(f"%{search_query}%")
         
-    if filter_status and filter_status != "Tất cả" and filter_status != "Mặc định":
-        query += " AND trang_thai = ?"
-        params.append(filter_status)
-        
-    query += " ORDER BY CASE "
-    query += "WHEN DATE(ngay_het_han, '+0 days') IS NULL "
-    query += "OR DATE(ngay_het_han, '+0 days') != TRIM(ngay_het_han) THEN 1 ELSE 0 END, "
-    query += "DATE(ngay_het_han, '+0 days') ASC, id ASC"
-    
     cursor.execute(query, params)
     rows = cursor.fetchall()
     conn.close()
-    return [dict(row) for row in rows]
+    today = local_today()
+    accounts = [dict(row) for row in rows]
+    for account in accounts:
+        account['trang_thai'] = get_status_from_expiry(
+            account.get('ngay_het_han'), today=today
+        )
+    if filter_status in (STATUS_ACTIVE, STATUS_EXPIRED):
+        accounts = [a for a in accounts if a['trang_thai'] == filter_status]
+    return sorted(accounts, key=lambda account: (expiry_sort_key(account.get('ngay_het_han')), account['id']))
 
 def get_deleted_accounts():
     """Lấy danh sách tài khoản trong Thùng rác (trạng thái 'Đã xóa')."""
     conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT * FROM tai_khoan WHERE trang_thai = 'Đã xóa' ORDER BY id DESC")
+    _ensure_deleted_at_column(cursor, "tai_khoan")
+    conn.commit()
+    cursor.execute(
+        f"SELECT * FROM tai_khoan WHERE trang_thai = 'Đã xóa' "
+        f"ORDER BY {TRASH_ORDER_BY}"
+    )
     rows = cursor.fetchall()
     conn.close()
     return [dict(row) for row in rows]
@@ -323,17 +456,35 @@ def get_available_emails():
     """Lấy danh sách các email tài khoản chưa bán (Đang hoạt động)."""
     conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT email FROM tai_khoan WHERE trang_thai = 'Đang hoạt động' ORDER BY email ASC")
+    _ensure_deleted_at_column(cursor, "tai_khoan")
+    _ensure_account_created_at_column(cursor)
+    conn.commit()
+    cursor.execute(f"""
+        SELECT email
+        FROM tai_khoan
+        WHERE trang_thai = 'Đang hoạt động'
+          AND (deleted_at IS NULL OR TRIM(deleted_at) = '')
+        ORDER BY {ACCOUNT_EMAIL_ORDER_BY}
+    """)
     rows = cursor.fetchall()
     conn.close()
     return [row['email'] for row in rows]
 
 
 def get_all_emails():
-    """Lấy tất cả email tài khoản hiện có, trừ những tài khoản đã bị xóa mềm (trang_thai = 'Đã xóa')."""
+    """Return non-deleted accounts, newest-created first for order entry."""
     conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT email FROM tai_khoan WHERE trang_thai != 'Đã xóa' ORDER BY email ASC")
+    _ensure_deleted_at_column(cursor, "tai_khoan")
+    _ensure_account_created_at_column(cursor)
+    conn.commit()
+    cursor.execute(f"""
+        SELECT email
+        FROM tai_khoan
+        WHERE trang_thai != 'Đã xóa'
+          AND (deleted_at IS NULL OR TRIM(deleted_at) = '')
+        ORDER BY {ACCOUNT_EMAIL_ORDER_BY}
+    """)
     rows = cursor.fetchall()
     conn.close()
     return [row['email'] for row in rows]
@@ -411,9 +562,15 @@ def add_order(email_tai_khoan, nen_tang, ten_khach_hang, so_tien, ngay_mua, ngay
     try:
         # 1. Thêm đơn hàng mới
         cursor.execute("""
-        INSERT INTO don_hang (email_tai_khoan, nen_tang, ten_khach_hang, so_tien, ngay_mua, ngay_het_han, ghi_chu, so_lan_thong_bao)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 0)
-        """, (email_tai_khoan, nen_tang, ten_khach_hang, so_tien, ngay_mua, ngay_het_han, ghi_chu))
+        INSERT INTO don_hang (
+            email_tai_khoan, nen_tang, ten_khach_hang, so_tien, ngay_mua,
+            ngay_het_han, ghi_chu, so_lan_thong_bao, created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)
+        """, (
+            email_tai_khoan, nen_tang, ten_khach_hang, so_tien, ngay_mua,
+            ngay_het_han, ghi_chu, datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        ))
         order_id = cursor.lastrowid
         ma_don_hang = f"DH-{order_id:04d}"
         
@@ -482,12 +639,17 @@ def delete_order_soft(order_id):
     conn = get_connection()
     cursor = conn.cursor()
     try:
+        _ensure_deleted_at_column(cursor, "don_hang")
         # Tìm email tài khoản liên kết
         cursor.execute("SELECT email_tai_khoan FROM don_hang WHERE id = ?", (order_id,))
         row = cursor.fetchone()
         
         # Đánh dấu xóa đơn hàng
-        cursor.execute("UPDATE don_hang SET da_xoa = 1 WHERE id = ?", (order_id,))
+        cursor.execute(
+            "UPDATE don_hang SET da_xoa = 1, deleted_at = CURRENT_TIMESTAMP "
+            "WHERE id = ?",
+            (order_id,),
+        )
         
         # Giải phóng tài khoản tương ứng
         if row and row['email_tai_khoan']:
@@ -516,6 +678,7 @@ def delete_orders_soft_bulk(order_ids):
     conn = get_connection()
     cursor = conn.cursor()
     try:
+        _ensure_deleted_at_column(cursor, "don_hang")
         placeholders = ",".join("?" for _ in order_ids)
         cursor.execute(
             f"SELECT id, email_tai_khoan FROM don_hang "
@@ -524,7 +687,8 @@ def delete_orders_soft_bulk(order_ids):
         )
         linked_accounts = cursor.fetchall()
         cursor.execute(
-            f"UPDATE don_hang SET da_xoa = 1 WHERE id IN ({placeholders})",
+            f"UPDATE don_hang SET da_xoa = 1, "
+            f"deleted_at = CURRENT_TIMESTAMP WHERE id IN ({placeholders})",
             order_ids,
         )
         for row in linked_accounts:
@@ -567,13 +731,17 @@ def restore_order(order_id):
     conn = get_connection()
     cursor = conn.cursor()
     try:
+        _ensure_deleted_at_column(cursor, "don_hang")
         cursor.execute("SELECT email_tai_khoan FROM don_hang WHERE id = ?", (order_id,))
         row = cursor.fetchone()
         email = row['email_tai_khoan'] if row else None
         ma_don_hang = f"DH-{order_id:04d}"
         
         # Khôi phục đơn hàng
-        cursor.execute("UPDATE don_hang SET da_xoa = 0 WHERE id = ?", (order_id,))
+        cursor.execute(
+            "UPDATE don_hang SET da_xoa = 0, deleted_at = NULL WHERE id = ?",
+            (order_id,),
+        )
         
         # Nếu có tài khoản liên kết và tài khoản này đang rảnh (hoặc đã bị xóa mềm nhưng khôi phục được)
         if email:
@@ -599,10 +767,11 @@ def restore_order(order_id):
         conn.close()
 
 def get_orders(search_query="", status_filter="Tất cả"):
-    """Lấy đơn hàng đã lọc, sắp xếp theo ngày hết hạn tăng dần.
+    """Lấy đơn hàng sau khi tìm kiếm/lọc rồi sắp xếp.
 
-    Mọi nhánh lọc dùng giá trị ngày ISO qua ``DATE()``; ngày trống/sai định
-    dạng được đưa xuống cuối ở nhánh có thể chứa chúng.
+    Các nhánh trạng thái giữ nguyên thứ tự ngày hết hạn. Nhánh ``Đơn hàng
+    gần đây`` dùng timestamp tạo bản ghi, với ``id`` làm fallback cho dữ liệu
+    cũ không có timestamp hợp lệ.
     """
     conn = get_connection()
     cursor = conn.cursor()
@@ -611,35 +780,53 @@ def get_orders(search_query="", status_filter="Tất cả"):
     params = []
     
     if search_query:
-        query += " AND (email_tai_khoan LIKE ? OR ten_khach_hang LIKE ? OR id LIKE ?)"
-        # Hỗ trợ tìm kiếm theo ID, Email hoặc Tên khách hàng
+        query += " AND (email_tai_khoan LIKE ? OR ten_khach_hang LIKE ? OR nen_tang LIKE ? OR id LIKE ?)"
+        # Hỗ trợ tìm kiếm theo ID, email, nền tảng hoặc tên khách hàng.
         clean_id = search_query.lower().replace("dh-", "")
         try:
             val_id = int(clean_id)
         except ValueError:
             val_id = -1
-        params.extend([f"%{search_query}%", f"%{search_query}%", val_id])
+        params.extend([
+            f"%{search_query}%", f"%{search_query}%", f"%{search_query}%", val_id
+        ])
         
-    if status_filter == "Đơn hàng mới nhất":
-        query += " AND DATE(ngay_het_han) >= DATE('now', 'localtime')"
-    elif status_filter == "Đã hết hạn":
-        query += " AND DATE(ngay_het_han) < DATE('now', 'localtime')"
-
-    query += " ORDER BY CASE "
-    query += "WHEN DATE(ngay_het_han, '+0 days') IS NULL "
-    query += "OR DATE(ngay_het_han, '+0 days') != TRIM(ngay_het_han) THEN 1 ELSE 0 END, "
-    query += "DATE(ngay_het_han, '+0 days') ASC, id ASC"
-    
     cursor.execute(query, params)
     rows = cursor.fetchall()
     conn.close()
-    return [dict(row) for row in rows]
+    today = local_today()
+    orders = [dict(row) for row in rows]
+    for order in orders:
+        order['trang_thai'] = get_status_from_expiry(
+            order.get('ngay_het_han'), today=today
+        )
+    if status_filter in (STATUS_ACTIVE, STATUS_EXPIRED):
+        orders = [order for order in orders if order['trang_thai'] == status_filter]
+    if status_filter == "Đơn hàng gần đây":
+        def recent_sort_key(order):
+            raw_created_at = order.get('created_at')
+            try:
+                return (0, -datetime.fromisoformat(raw_created_at).timestamp(), -order['id'])
+            except (TypeError, ValueError):
+                # Invalid/absent legacy timestamps follow valid values, using
+                # id DESC as a stable fallback.
+                return (1, 0, -order['id'])
+
+        return sorted(
+            orders,
+            key=recent_sort_key,
+        )
+    return sorted(orders, key=lambda order: (expiry_sort_key(order.get('ngay_het_han')), order['id']))
 
 def get_deleted_orders():
     """Lấy danh sách đơn hàng đã xóa mềm (trong Thùng rác)."""
     conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT * FROM don_hang WHERE da_xoa = 1 ORDER BY id DESC")
+    _ensure_deleted_at_column(cursor, "don_hang")
+    conn.commit()
+    cursor.execute(
+        f"SELECT * FROM don_hang WHERE da_xoa = 1 ORDER BY {TRASH_ORDER_BY}"
+    )
     rows = cursor.fetchall()
     conn.close()
     return [dict(row) for row in rows]
@@ -666,7 +853,6 @@ def get_dashboard_stats():
     """
     conn = get_connection()
     cursor = conn.cursor()
-    today_str = datetime.now().strftime("%Y-%m-%d")
     current_month_prefix = datetime.now().strftime("%Y-%m-") + "%"  # e.g. '2026-07-%'
     
     # 1. Tổng đơn hàng
@@ -674,8 +860,12 @@ def get_dashboard_stats():
     total_orders = cursor.fetchone()[0] or 0
     
     # 2. Đơn hàng còn bảo hành
-    cursor.execute("SELECT COUNT(*) FROM don_hang WHERE da_xoa = 0 AND (ngay_het_han >= ? OR ngay_het_han IS NULL)", (today_str,))
-    active_warranty = cursor.fetchone()[0] or 0
+    cursor.execute("SELECT ngay_het_han FROM don_hang WHERE da_xoa = 0")
+    today = local_today()
+    active_warranty = sum(
+        get_status_from_expiry(row['ngay_het_han'], today=today) == STATUS_ACTIVE
+        for row in cursor.fetchall()
+    )
     
     # 3. Tổng doanh thu
     cursor.execute("SELECT SUM(so_tien) FROM don_hang WHERE da_xoa = 0")

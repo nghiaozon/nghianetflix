@@ -1,16 +1,22 @@
 # -*- coding: utf-8 -*-
 
+import json
+import os
+
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QTextEdit,
     QDateEdit, QPushButton, QComboBox, QTableWidget, QTableWidgetItem,
     QHeaderView, QMessageBox, QFormLayout, QWidget, QAbstractItemView, QMenu,
-    QCompleter, QStyledItemDelegate, QStyle, QStyleOptionViewItem
+    QListView, QStyledItemDelegate, QStyle, QStyleOptionViewItem, QToolTip
 )
-from PySide6.QtCore import QDate, QEvent, Qt, QStringListModel
+from PySide6.QtCore import (
+    QDate, QEvent, Qt, QStringListModel, QTimer, QPoint, QItemSelectionModel,
+)
 from PySide6.QtGui import QBrush, QColor, QPalette, QKeySequence
 from PySide6.QtWidgets import QApplication
 from datetime import date, timedelta
 import database
+from runtime_paths import config_file
 
 
 class PersistentRowSelectionDelegate(QStyledItemDelegate):
@@ -32,29 +38,221 @@ class PersistentRowSelectionDelegate(QStyledItemDelegate):
         super().paint(painter, option, index)
 
 
+class AutocompleteItemDelegate(QStyledItemDelegate):
+    """Keep completion rows compact even when the application theme is large."""
+
+    def sizeHint(self, option, index):
+        size = super().sizeHint(option, index)
+        size.setHeight(34)
+        return size
+
+
 class AutocompleteLineEdit(QLineEdit):
-    """QLineEdit with explicit, Windows-like popup completion."""
+    """Reusable autocomplete input that keeps keyboard focus in the editor."""
+
+    _POPUP_STYLE = """
+        QListView {
+            background: #ffffff;
+            border: 1px solid #93c5fd;
+            border-radius: 4px;
+            outline: 0;
+            padding: 2px;
+        }
+        QListView::item {
+            color: #1f2937;
+            padding: 7px 10px;
+        }
+        QListView::item:selected {
+            background: #2563eb;
+            color: #ffffff;
+        }
+        QListView::item:hover:!selected {
+            background: #dbeafe;
+        }
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._suggestions = []
+        self._model = QStringListModel(self)
+        self._completing = False
+        self._pending_completion_text = ""
+        self._completion_timer = QTimer(self)
+        self._completion_timer.setSingleShot(True)
+        self._completion_timer.timeout.connect(self._show_pending_completion)
+        self._focus_out_timer = QTimer(self)
+        self._focus_out_timer.setSingleShot(True)
+        self._focus_out_timer.timeout.connect(self._hide_if_focus_was_lost)
+
+        # A lightweight QListView popup avoids QCompleter's built-in insertion
+        # behavior, which can consume the first typed character on Windows.
+        self._popup = QListView()
+        self._popup.setWindowFlags(
+            Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint
+        )
+        self._popup.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._popup.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+        self._popup.setModel(self._model)
+        self._popup.setItemDelegate(AutocompleteItemDelegate(self._popup))
+        self._popup.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self._popup.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._popup.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self._popup.setStyleSheet(self._POPUP_STYLE)
+        self._popup.clicked.connect(lambda index: self._apply_completion(index.data()))
+        self.textChanged.connect(self._update_completion)
 
     def set_suggestions(self, suggestions):
-        model = QStringListModel(suggestions, self)
-        completer = QCompleter(model, self)
-        completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
-        completer.setFilterMode(Qt.MatchFlag.MatchStartsWith)
-        completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
-        completer.setMaxVisibleItems(10)
-        self.setCompleter(completer)
+        """Set unique suggestions while preserving their original spelling."""
+        values = []
+        seen = set()
+        for suggestion in suggestions:
+            value = str(suggestion).strip()
+            key = value.casefold()
+            if value and key not in seen:
+                values.append(value)
+                seen.add(key)
+        self._suggestions = values
+        self._update_completion(self.text())
+
+    def _matching_suggestions(self, text):
+        query = text.strip().casefold()
+        if not query:
+            return []
+        starts_with = []
+        contains = []
+        for value in self._suggestions:
+            normalized = value.casefold()
+            if normalized.startswith(query):
+                starts_with.append(value)
+            elif query in normalized:
+                contains.append(value)
+        return starts_with + contains
+
+    def _update_completion(self, text):
+        if self._completing:
+            return
+
+        matches = self._matching_suggestions(text)
+        self._model.setStringList(matches)
+        if not self.hasFocus() or not matches:
+            self._hide_completion_popup()
+            return
+
+        # Wait until QLineEdit finishes processing the typed key before opening
+        # the popup, so focus and text input remain stable across platforms.
+        self._pending_completion_text = text
+        self._completion_timer.start(0)
+
+    def _show_pending_completion(self):
+        self._show_completion_if_current(self._pending_completion_text)
+
+    def _show_completion_if_current(self, text):
+        if (self._completing or not self.hasFocus() or self.text() != text
+                or self._model.rowCount() == 0):
+            return
+
+        self._ensure_popup_parent()
+        self._position_popup()
+        self._popup.show()
+        self._popup.raise_()
+        self._select_completion_row(0)
+
+    def _popup_is_open(self):
+        return self._popup.isVisible() and self._model.rowCount() > 0
+
+    def _hide_completion_popup(self):
+        self._popup.hide()
+
+    def _ensure_popup_parent(self):
+        """Make the list a child of the current form, never a keyboard popup."""
+        form = self.window()
+        if form is self:
+            return
+        if self._popup.parentWidget() is not form:
+            self._popup.setParent(form)
+            self._popup.setWindowFlags(
+                Qt.WindowType.Widget | Qt.WindowType.FramelessWindowHint
+            )
+            self._popup.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+
+    def _position_popup(self):
+        """Place the popup under the input, or above when near screen bottom."""
+        row_height = max(1, self._popup.sizeHintForRow(0))
+        height = row_height * min(self._model.rowCount(), 10) + 4
+        parent = self._popup.parentWidget()
+        if parent is None:
+            top_left = self.mapToGlobal(QPoint(0, self.height()))
+            screen = self.screen()
+            available = screen.availableGeometry() if screen is not None else None
+        else:
+            top_left = self.mapTo(parent, QPoint(0, self.height()))
+            available = parent.rect()
+        if available is not None:
+            height = min(height, available.height())
+            if top_left.y() + height > available.bottom() + 1:
+                top_left.setY(self.mapToGlobal(QPoint(0, 0)).y() - height)
+            top_left.setX(max(
+                available.left(),
+                min(top_left.x(), available.right() - self.width() + 1),
+            ))
+        self._popup.setGeometry(top_left.x(), top_left.y(), self.width(), height)
+
+    def _select_completion_row(self, row):
+        row_count = self._model.rowCount()
+        if not row_count:
+            return
+        row = max(0, min(row, row_count - 1))
+        index = self._model.index(row, 0)
+        if index.isValid():
+            self._popup.selectionModel().setCurrentIndex(
+                index, QItemSelectionModel.SelectionFlag.ClearAndSelect
+            )
+
+    def _current_completion(self):
+        index = self._popup.currentIndex()
+        if not index.isValid():
+            index = self._model.index(0, 0)
+        return str(index.data()) if index.isValid() else ""
+
+    def _apply_completion(self, value=None):
+        value = str(value or self._current_completion()).strip()
+        if not value:
+            return
+        self._completing = True
+        try:
+            self.setText(value)
+            self.setCursorPosition(len(value))
+        finally:
+            self._completing = False
+        self._hide_completion_popup()
+        self.setFocus()
+
+    def focusOutEvent(self, event):
+        super().focusOutEvent(event)
+        # Deferring lets a click on a popup item emit ``clicked`` first.
+        self._focus_out_timer.start(0)
+
+    def _hide_if_focus_was_lost(self):
+        if not self.hasFocus():
+            self._hide_completion_popup()
 
     def keyPressEvent(self, event):
-        completer = self.completer()
-        if (completer is not None
-                and event.key() in (Qt.Key.Key_Tab, Qt.Key.Key_Backtab)
-                and completer.popup().isVisible()):
-            index = completer.popup().currentIndex()
-            if not index.isValid() and completer.completionModel().rowCount() > 0:
-                index = completer.completionModel().index(0, 0)
-            if index.isValid():
-                self.setText(str(index.data()))
-                completer.popup().hide()
+        if self._popup_is_open():
+            key = event.key()
+            if key in (Qt.Key.Key_Down, Qt.Key.Key_Up):
+                index = self._popup.currentIndex()
+                current_row = index.row() if index.isValid() else 0
+                delta = 1 if key == Qt.Key.Key_Down else -1
+                self._select_completion_row(current_row + delta)
+                event.accept()
+                return
+            if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Tab,
+                       Qt.Key.Key_Backtab):
+                self._apply_completion()
+                event.accept()
+                return
+            if key == Qt.Key.Key_Escape:
+                self._hide_completion_popup()
                 event.accept()
                 return
         super().keyPressEvent(event)
@@ -81,11 +279,148 @@ class CopyableTableWidget(QTableWidget):
         self._stt_drag_start_row = None
         self._stt_drag_current_row = None
         self._stt_drag_modifiers = Qt.KeyboardModifier.NoModifier
+        self._column_config_key = None
+        self._column_specs = []
+        self._tooltip_columns = set()
+        self._column_widths_loaded_from_config = False
+        self._user_resized_columns = False
+        self._applying_column_widths = False
+        self._column_resize_signal_connected = False
         self.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectItems)
         self.setMouseTracking(True)
+        self.viewport().installEventFilter(self)
         self.setItemDelegate(PersistentRowSelectionDelegate(self))
         self.ApplyDataGridViewTheme()
+
+    def configure_resizable_columns(self, config_key, column_specs, tooltip_columns=()):
+        """Enable Excel-like header resizing and restore persisted column widths.
+
+        ``column_specs`` is an ordered sequence of dictionaries with ``key``,
+        ``width`` and ``min_width``.  Widths are stored independently for each
+        table in config/settings.json, leaving all data-cell mouse handling in
+        this widget untouched.
+        """
+        self._column_config_key = config_key
+        self._column_specs = list(column_specs)
+        self._tooltip_columns = set(tooltip_columns)
+        self._column_widths_loaded_from_config = False
+        self._user_resized_columns = False
+
+        header = self.horizontalHeader()
+        header.setStretchLastSection(False)
+        header.setCascadingSectionResizes(False)
+        header.setMinimumSectionSize(min(spec["min_width"] for spec in self._column_specs))
+        for column in range(len(self._column_specs)):
+            header.setSectionResizeMode(column, QHeaderView.ResizeMode.Interactive)
+
+        stored_widths = self._load_column_widths()
+        self._column_widths_loaded_from_config = bool(stored_widths)
+        self._apply_column_widths(stored_widths)
+        if self._column_resize_signal_connected:
+            header.sectionResized.disconnect(self._on_column_resized)
+        header.sectionResized.connect(self._on_column_resized)
+        self._column_resize_signal_connected = True
+
+    def _settings_path(self):
+        return config_file("settings.json")
+
+    def _read_settings(self):
+        try:
+            with open(self._settings_path(), "r", encoding="utf-8") as config:
+                data = json.load(config)
+                return data if isinstance(data, dict) else {}
+        except (OSError, ValueError, TypeError):
+            return {}
+
+    def _load_column_widths(self):
+        if not self._column_config_key:
+            return {}
+        widths = self._read_settings().get(self._column_config_key, {})
+        return widths if isinstance(widths, dict) else {}
+
+    @staticmethod
+    def _clamp_column_width(value, spec):
+        try:
+            width = int(value)
+        except (TypeError, ValueError):
+            width = spec["width"]
+        maximum = spec.get("max_width")
+        if maximum is not None:
+            width = min(width, maximum)
+        return max(spec["min_width"], width)
+
+    def _apply_column_widths(self, stored_widths=None):
+        stored_widths = stored_widths or {}
+        self._applying_column_widths = True
+        try:
+            for column, spec in enumerate(self._column_specs):
+                width = self._clamp_column_width(stored_widths.get(spec["key"], spec["width"]), spec)
+                self.horizontalHeader().resizeSection(column, width)
+        finally:
+            self._applying_column_widths = False
+
+    def _on_column_resized(self, column, _old_width, new_width):
+        if not self._column_specs or self._applying_column_widths:
+            return
+        spec = self._column_specs[column]
+        clamped_width = self._clamp_column_width(new_width, spec)
+        if clamped_width != new_width:
+            self._applying_column_widths = True
+            try:
+                self.horizontalHeader().resizeSection(column, clamped_width)
+            finally:
+                self._applying_column_widths = False
+            new_width = clamped_width
+        self._user_resized_columns = True
+        self._save_column_widths()
+
+    def _save_column_widths(self):
+        if not self._column_config_key:
+            return
+        settings = self._read_settings()
+        settings[self._column_config_key] = {
+            spec["key"]: self.horizontalHeader().sectionSize(column)
+            for column, spec in enumerate(self._column_specs)
+        }
+        try:
+            path = self._settings_path()
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as config:
+                json.dump(settings, config, indent=2, ensure_ascii=False)
+        except OSError as error:
+            print(f"Error saving table column widths: {error}")
+
+    def _expand_default_columns_to_available_width(self):
+        """Use surplus window width for the readable text columns before any drag."""
+        if (self._column_widths_loaded_from_config or self._user_resized_columns
+                or not self._column_specs):
+            return
+        available_width = self.viewport().width()
+        current_width = sum(self.horizontalHeader().sectionSize(i) for i in range(len(self._column_specs)))
+        extra_width = available_width - current_width
+        if extra_width <= 0:
+            return
+        weights = {"email": 4, "customer_name": 4, "note": 2}
+        active = [
+            (column, weights.get(spec["key"], 0))
+            for column, spec in enumerate(self._column_specs)
+            if weights.get(spec["key"], 0) > 0
+        ]
+        total_weight = sum(weight for _, weight in active)
+        if not total_weight:
+            return
+        self._applying_column_widths = True
+        try:
+            for column, weight in active:
+                current = self.horizontalHeader().sectionSize(column)
+                self.horizontalHeader().resizeSection(column, current + extra_width * weight // total_weight)
+        finally:
+            self._applying_column_widths = False
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._expand_default_columns_to_available_width()
 
     def set_row_action_callbacks(self, edit_callback=None, delete_callback=None):
         """Gắn hành động sửa/xóa cho menu chuột phải của từng bảng."""
@@ -134,6 +469,18 @@ class CopyableTableWidget(QTableWidget):
             widget.installEventFilter(self)
 
     def eventFilter(self, watched, event):
+        if watched is self.viewport() and event.type() == QEvent.Type.ToolTip:
+            index = self.indexAt(event.pos())
+            if index.isValid() and index.column() in self._tooltip_columns:
+                item = self.item(index.row(), index.column())
+                text = item.text() if item is not None else ""
+                # Table items have 10px padding on each side in the shared style.
+                is_truncated = self.fontMetrics().horizontalAdvance(text) > max(0, self.visualRect(index).width() - 20)
+                if text and is_truncated:
+                    QToolTip.showText(event.globalPos(), text, self.viewport())
+                else:
+                    QToolTip.hideText()
+                return True
         row = watched.property("copyable_table_row") if isinstance(watched, QWidget) else None
         if row is not None:
             column = watched.property("copyable_table_column")
@@ -669,10 +1016,14 @@ class OrderDialog(QDialog):
         self.email_combo = QComboBox()
         self.email_combo.setEditable(False)
 
-        # Đổ danh sách tất cả email tài khoản (trừ đã xóa) vào dropdown để người bán chọn
+        # Database returns non-deleted accounts by creation time, newest first.
+        # Only a new order uses the newest item as its default; edit mode loads
+        # the saved order email below in load_data().
         available_emails = database.get_all_emails()
         if available_emails:
             self.email_combo.addItems(available_emails)
+            if not self.is_edit:
+                self.email_combo.setCurrentIndex(0)
         else:
             # Nếu không có tài khoản rảnh, hiển thị thông báo trong dropdown và khóa lại
             self.email_combo.addItem("Không có tài khoản rảnh")

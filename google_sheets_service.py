@@ -11,6 +11,7 @@ from typing import List, Dict, Tuple
 from google.oauth2 import service_account
 import gspread
 from runtime_paths import config_file
+from expiry_status import get_status_from_expiry
 
 
 class GoogleSheetsService:
@@ -132,7 +133,7 @@ class GoogleSheetsService:
                     acc.get('ngay_het_han', ''),
                     acc.get('ghi_chu', ''),
                     acc.get('nguon', ''),
-                    acc.get('trang_thai', 'Đang hoạt động'),
+                    get_status_from_expiry(acc.get('ngay_het_han', '')),
                     datetime.now().isoformat()
                 ]
                 rows_to_add.append(row)
@@ -301,9 +302,4 @@ class GoogleSheetsService:
     @staticmethod
     def _calculate_order_status(ngay_het_han: str) -> str:
         """Tính trạng thái đơn hàng từ ngày hết hạn."""
-        try:
-            from datetime import date
-            expiry_date = date.fromisoformat(ngay_het_han)
-            return "Đã hết hạn" if expiry_date < date.today() else "Đang hoạt động"
-        except:
-            return "—"
+        return get_status_from_expiry(ngay_het_han)

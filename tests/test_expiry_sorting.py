@@ -1,6 +1,7 @@
 import sqlite3
 import tempfile
 import unittest
+from datetime import date
 from pathlib import Path
 from unittest.mock import patch
 
@@ -12,7 +13,9 @@ class ExpirySortingTests(unittest.TestCase):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.db_path = Path(self.temp_dir.name) / "expiry-sorting.db"
         self.db_patch = patch.object(database, "DB_FILE", str(self.db_path))
+        self.today_patch = patch.object(database, "local_today", return_value=date(2026, 7, 22))
         self.db_patch.start()
+        self.today_patch.start()
         connection = sqlite3.connect(self.db_path)
         connection.executescript(
             """
@@ -44,6 +47,7 @@ class ExpirySortingTests(unittest.TestCase):
         connection.close()
 
     def tearDown(self):
+        self.today_patch.stop()
         self.db_patch.stop()
         self.temp_dir.cleanup()
 
@@ -93,14 +97,16 @@ class ExpirySortingTests(unittest.TestCase):
 
         rows = database.get_accounts()
 
-        self.assertEqual([row["id"] for row in rows], [4, 2, 1, 6, 3, 5, 7, 8])
+        # dd/MM/yyyy is also a supported date format, so it is ordered as a
+        # real date rather than being treated as invalid legacy data.
+        self.assertEqual([row["id"] for row in rows], [4, 2, 3, 1, 6, 5, 7, 8])
 
     def test_account_search_and_status_filter_keep_expiry_order(self):
         self.seed_accounts()
 
         rows = database.get_accounts("netflix", "Đang hoạt động")
 
-        self.assertEqual([row["id"] for row in rows], [2, 1, 6, 3, 5, 7, 8])
+        self.assertEqual([row["id"] for row in rows], [1, 6])
 
     def test_editing_expiry_changes_position_after_refresh_query(self):
         self.seed_accounts()

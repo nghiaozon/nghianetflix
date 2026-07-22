@@ -19,6 +19,7 @@ import database
 import app_styles
 import dialogs
 import updater
+from expiry_status import get_status_from_expiry
 from app_version import APP_VERSION
 from dialogs import CopyableTableWidget
 
@@ -27,6 +28,7 @@ STATUS_FILTER_MAP = {
     "Tất cả": "all",
     "Đang hoạt động": "active",
     "Đã hết hạn": "expired",
+    "Đơn hàng gần đây": "recent",
 }
 
 ACCOUNT_DATABASE_FILTER_MAP = {
@@ -35,12 +37,11 @@ ACCOUNT_DATABASE_FILTER_MAP = {
     "expired": "Đã hết hạn",
 }
 
-# Giữ nguyên API truy vấn hiện có: giá trị cũ "Đơn hàng mới nhất" chính là
-# nhánh lọc các đơn chưa hết hạn và sắp xếp đơn mới trước.
 ORDER_DATABASE_FILTER_MAP = {
     "all": "Tất cả",
-    "active": "Đơn hàng mới nhất",
+    "active": "Đang hoạt động",
     "expired": "Đã hết hạn",
+    "recent": "Đơn hàng gần đây",
 }
 
 
@@ -471,8 +472,11 @@ class MainWindow(QMainWindow):
         self.current_accounts = []
         self.current_orders = []
         self.all_accounts = []
+        self.all_orders = []
         self.acc_current_page = 1
         self.acc_rows_per_page = 10
+        self.order_current_page = 1
+        self.order_rows_per_page = 10
 
         # Selection callbacks are connected while the tables are being built.
         # Keep their complete state available from the very first mouse event;
@@ -848,21 +852,21 @@ class MainWindow(QMainWindow):
         self.acc_table.setColumnCount(len(headers))
         self.acc_table.setHorizontalHeaderLabels(headers)
 
-        # Thiết lập co giãn tự động cho các cột phù hợp
-        header = self.acc_table.horizontalHeader()
-        header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        header.setStretchLastSection(False)
-        # Cột Email tự động mở rộng để luôn hiển thị đầy đủ địa chỉ dài.
-        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
-        header.setSectionResizeMode(6, QHeaderView.ResizeMode.Fixed)
-        header.setSectionResizeMode(8, QHeaderView.ResizeMode.Fixed)
-        # Kích thước mặc định ban đầu
-        header.resizeSection(0, 50)
-        header.resizeSection(3, 76)
-        header.resizeSection(6, 150)
-        header.resizeSection(8, 104)
+        self.acc_table.configure_resizable_columns(
+            "account_table_columns",
+            [
+                {"key": "stt", "width": 70, "min_width": 55},
+                {"key": "email", "width": 260, "min_width": 180},
+                {"key": "password", "width": 180, "min_width": 130},
+                {"key": "linked", "width": 100, "min_width": 80},
+                {"key": "note", "width": 180, "min_width": 110},
+                {"key": "expiry_date", "width": 130, "min_width": 120},
+                {"key": "status", "width": 150, "min_width": 130},
+                {"key": "source", "width": 130, "min_width": 100},
+                {"key": "actions", "width": 120, "min_width": 110},
+            ],
+            tooltip_columns=(1, 4, 7),
+        )
         self.acc_table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.acc_table.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
         
@@ -1204,7 +1208,7 @@ class MainWindow(QMainWindow):
     def view_customers_for_account(self, account_data):
         """Chuyển sang Tab Đơn Hàng và lọc các đơn hàng theo email hoặc ID tài khoản.
 
-        Sắp xếp theo ngày tạo tăng dần (đơn cũ lên trên).
+        Danh sách vẫn dùng thứ tự mặc định của bộ lọc đang chọn.
         """
         # Lấy email và id
         email = account_data.get('email')
@@ -1225,8 +1229,7 @@ class MainWindow(QMainWindow):
         if idx >= 0:
             self.order_filter_combo.setCurrentIndex(idx)
 
-        # Tải lại đơn hàng với sắp xếp tăng dần
-        self.refresh_orders(sort_asc=True)
+        self.refresh_orders(reset_page=True)
 
         # Nếu không có đơn hàng liên quan, hiện thông báo
         if not self.current_orders:
@@ -1341,12 +1344,16 @@ class MainWindow(QMainWindow):
         self.order_search_input.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
         )
-        self.order_search_input.textChanged.connect(self.refresh_orders)
+        self.order_search_input.textChanged.connect(
+            lambda _text: self.refresh_orders(reset_page=True)
+        )
         top_bar_layout.addWidget(self.order_search_input, 1)
         
         # Bộ lọc trạng thái đơn hàng
         self.order_filter_combo = QComboBox()
-        self.order_filter_combo.addItems(["Tất cả", "Đang hoạt động", "Đã hết hạn"])
+        self.order_filter_combo.addItems([
+            "Tất cả", "Đang hoạt động", "Đã hết hạn", "Đơn hàng gần đây"
+        ])
         self.order_filter_combo.setMinimumWidth(140)
         self.order_filter_combo.setSizePolicy(
             QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed
@@ -1406,20 +1413,59 @@ class MainWindow(QMainWindow):
         self.order_table.setColumnCount(len(headers))
         self.order_table.setHorizontalHeaderLabels(headers)
         
-        header = self.order_table.horizontalHeader()
-        header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        header.setStretchLastSection(False)
-        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(8, QHeaderView.ResizeMode.Fixed)
-        header.setSectionResizeMode(9, QHeaderView.ResizeMode.Fixed)  # Thao tác
-        header.resizeSection(0, 50)
-        header.resizeSection(8, 150)
-        header.resizeSection(9, 104)
+        self.order_table.configure_resizable_columns(
+            "order_table_columns",
+            [
+                {"key": "stt", "width": 70, "min_width": 55},
+                {"key": "email", "width": 250, "min_width": 180},
+                {"key": "platform", "width": 120, "min_width": 100},
+                {"key": "customer_name", "width": 220, "min_width": 140},
+                {"key": "amount", "width": 120, "min_width": 110},
+                {"key": "note", "width": 160, "min_width": 110},
+                {"key": "purchase_date", "width": 120, "min_width": 110},
+                {"key": "expiry_date", "width": 130, "min_width": 120},
+                {"key": "status", "width": 150, "min_width": 130},
+                {"key": "actions", "width": 120, "min_width": 110},
+            ],
+            tooltip_columns=(1, 2, 3, 5),
+        )
         self.order_table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.order_table.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
         
-        table_card_layout.addWidget(self.order_table)
+        table_card_layout.addWidget(self.order_table, 1)
+
+        pagination_layout = QHBoxLayout()
+        pagination_layout.setContentsMargins(12, 0, 12, 0)
+        self.order_results_label = QLabel("Hiển thị 0 kết quả")
+        self.order_results_label.setObjectName("PaginationLabel")
+        pagination_layout.addWidget(self.order_results_label)
+        pagination_layout.addStretch()
+
+        self.order_prev_button = QPushButton("‹")
+        self.order_prev_button.setProperty("class", "PageButton")
+        self.order_prev_button.setToolTip("Trang trước")
+        self.order_prev_button.clicked.connect(lambda: self.change_order_page(-1))
+        pagination_layout.addWidget(self.order_prev_button)
+
+        self.order_page_button = QPushButton("1")
+        self.order_page_button.setProperty("class", "PageCurrent")
+        self.order_page_button.setFixedSize(36, 36)
+        self.order_page_button.setEnabled(False)
+        pagination_layout.addWidget(self.order_page_button)
+
+        self.order_next_button = QPushButton("›")
+        self.order_next_button.setProperty("class", "PageButton")
+        self.order_next_button.setToolTip("Trang sau")
+        self.order_next_button.clicked.connect(lambda: self.change_order_page(1))
+        pagination_layout.addWidget(self.order_next_button)
+        pagination_layout.addSpacing(20)
+
+        self.order_rows_combo = QComboBox()
+        self.order_rows_combo.addItems(["10 / trang", "20 / trang", "50 / trang"])
+        self.order_rows_combo.setFixedWidth(112)
+        self.order_rows_combo.currentIndexChanged.connect(self.change_order_page_size)
+        pagination_layout.addWidget(self.order_rows_combo)
+        table_card_layout.addLayout(pagination_layout)
         layout.addWidget(table_card, 1)
         # Đặt chiều cao hàng mặc định cho bảng đơn hàng
         self.order_table.verticalHeader().setDefaultSectionSize(50)
@@ -1427,20 +1473,27 @@ class MainWindow(QMainWindow):
         
         self.content_stack.addWidget(page)
 
-    def refresh_orders(self, sort_asc=False):
-        """Tải dữ liệu từ DB lên bảng danh sách đơn hàng."""
+    def refresh_orders(self, *_args, reset_page=False):
+        """Tải, lọc, sắp xếp toàn bộ đơn hàng rồi mới cắt trang hiển thị."""
         search_query = self.order_search_input.text().strip()
         status_key = normalize_status_filter(self.order_filter_combo.currentText())
         status_filter = ORDER_DATABASE_FILTER_MAP[status_key]
         
-        self.current_orders = database.get_orders(search_query, status_filter)
+        self.all_orders = database.get_orders(search_query, status_filter)
+        if reset_page:
+            self.order_current_page = 1
+        total_pages = max(1, math.ceil(len(self.all_orders) / self.order_rows_per_page))
+        self.order_current_page = min(max(1, self.order_current_page), total_pages)
+        start_index = (self.order_current_page - 1) * self.order_rows_per_page
+        end_index = start_index + self.order_rows_per_page
+        self.current_orders = self.all_orders[start_index:end_index]
         
         self.order_table.setRowCount(0)
         self.order_table.setRowCount(len(self.current_orders))
         
         for idx, row in enumerate(self.current_orders):
             # Cột [STT] đánh lại theo danh sách hiện đang hiển thị.
-            stt_item = QTableWidgetItem(str(idx + 1))
+            stt_item = QTableWidgetItem(str(start_index + idx + 1))
             stt_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             self.order_table.setItem(idx, 0, stt_item)
 
@@ -1484,14 +1537,8 @@ class MainWindow(QMainWindow):
                 exp_display = exp_date or "—"
             self.order_table.setItem(idx, 7, QTableWidgetItem(exp_display))
             
-            # Trạng thái (tính từ ngày hết hạn)
-            try:
-                from datetime import date
-                ngay_het_han = date.fromisoformat(exp_date)
-                is_expired = ngay_het_han < date.today()
-                trang_thai = "Đã hết hạn" if is_expired else "Đang hoạt động"
-            except:
-                trang_thai = "—"
+            # Trạng thái luôn dùng quy tắc ngày hết hạn chung của ứng dụng.
+            trang_thai = get_status_from_expiry(exp_date)
             
             self.order_table.setCellWidget(idx, 8, self.create_status_badge(trang_thai))
             
@@ -1504,8 +1551,27 @@ class MainWindow(QMainWindow):
             if status_item and status_item.text() == "Đã hết hạn":
                 highlight_expired_status(status_item)
 
+        visible_start = start_index + 1 if self.all_orders else 0
+        visible_end = min(end_index, len(self.all_orders))
+        self.order_results_label.setText(
+            f"Hiển thị {visible_start}–{visible_end} trong {len(self.all_orders)} kết quả"
+        )
+        self.order_page_button.setText(str(self.order_current_page))
+        self.order_prev_button.setEnabled(self.order_current_page > 1)
+        self.order_next_button.setEnabled(self.order_current_page < total_pages)
+
     def on_order_status_filter_changed(self, _index):
-        """Lọc đơn hàng ngay khi người dùng chọn trạng thái."""
+        """Lọc đơn hàng ngay khi người dùng chọn trạng thái và về trang đầu."""
+        self.refresh_orders(reset_page=True)
+
+    def change_order_page(self, direction):
+        """Đổi trang sau khi dữ liệu đã được lọc và sắp xếp trong truy vấn."""
+        self.order_current_page += direction
+        self.refresh_orders()
+
+    def change_order_page_size(self, _index):
+        """Đổi số dòng mỗi trang và quay về trang đầu."""
+        self.order_rows_per_page = int(self.order_rows_combo.currentText().split()[0])
         self.refresh_orders(reset_page=True)
 
     def on_order_stt_click(self, row, modifiers=Qt.KeyboardModifier.NoModifier):
@@ -1643,7 +1709,12 @@ class MainWindow(QMainWindow):
         """Bấm nút thêm đơn hàng -> Hiển thị Dialog."""
         dlg = dialogs.OrderDialog(self)
         if dlg.exec() == QDialog.DialogCode.Accepted:
-            self.refresh_orders()
+            # A newly created order must be visible at the top immediately
+            # when the recent-order view is active.
+            is_recent_filter = (
+                normalize_status_filter(self.order_filter_combo.currentText()) == "recent"
+            )
+            self.refresh_orders(reset_page=is_recent_filter)
             self.refresh_charts()
 
     def on_edit_order_clicked(self, order_data):
